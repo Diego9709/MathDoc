@@ -344,5 +344,5 @@ theorem double_eq (n : Nat) : double n = 2 * n := by
   不会产生错误的认证。
 - 签名文本不同、但 GoalKey 与结论相同的前提占位（「T ⇐ {T}」这种无意义的拆法），需要协调层在记录认证时拒绝；
   这条规则不属于文件格式，还没有设计。
-- `mdc check` 需要的服务端检查接口还没有确定，见 `docs/coordination-project-model.md` 待决定 E。
+- `mdc check` 依赖的草稿检查接口已决定由 LeanGround 提供（`docs/coordination-project-model.md` 决定 E），但接口还没有设计；就绪之前不提供 `mdc check`。
 - Rocq 不在本规范范围内。
