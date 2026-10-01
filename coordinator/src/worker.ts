@@ -7,6 +7,8 @@ import {
   Fault,
   identitySchema,
   addGoal,
+  attached,
+  derivePicks,
   ingest,
   recompute,
   requireThat,
@@ -27,6 +29,7 @@ import {
   type Conversion,
   type Environment,
   type NodeBinding,
+  type ProofRequest,
 } from "./proof.js";
 import {
   buildBatch,
@@ -57,11 +60,11 @@ export class Worker {
     private leanActor: string,
     private terminus: Terminus | null = null,
   ) {}
-  private async snapshot(b: Board): Promise<Snapshot> {
-    requireThat(this.terminus && b.request, "documents_not_configured", 503);
+  private async snapshot(request: ProofRequest): Promise<Snapshot> {
+    requireThat(this.terminus, "documents_not_configured", 503);
     try {
       return await this.terminus
-        .database(b.request.database, b.request.branch)
+        .database(request.database, request.branch)
         .load();
     } catch (e) {
       if (e instanceof DocError)
@@ -73,16 +76,16 @@ export class Worker {
       throw e;
     }
   }
-  private environment(b: Board): Environment {
+  private environment(b: Board, request: ProofRequest): Environment {
     return {
       base_key: Number(b.base.base_key),
       base: b.base as Environment["base"],
       context: b.context as Environment["context"],
       options: b.options as Environment["options"],
       minimum_trust: b.minimum_trust,
-      environment_id: b.request!.environment_id,
-      ...(b.request!.replaces_environment_id
-        ? { replaces_environment_id: b.request!.replaces_environment_id }
+      environment_id: request.environment_id,
+      ...(request.replaces_environment_id
+        ? { replaces_environment_id: request.replaces_environment_id }
         : {}),
       updated_by: b.owner,
     };
@@ -187,14 +190,15 @@ export class Worker {
    * Plan §7.3: register definition nodes (dependencies first), resolve every theorem
    * node's statement, and submit nodes that carry a proof (sketches when they have
    * premise nodes). Nodes whose proof is `sorry` stay open goals with a prove task.
+   * A branch whose root resolves to another goal than `expectedRoot` submits nothing.
    */
-  private async bind(b: Board) {
-    const snap = await this.snapshot(b);
-    const root = snap.nodes.get(b.request!.node);
-    requireThat(root, "document_not_found", 404);
-    const c = convert(snap.nodes, b.request!.node, b.context as never);
-    const top = c.bindings[b.request!.node];
-    requireThat(top, "root_has_no_lean_block");
+  private async bind(b: Board, request: ProofRequest, expectedRoot?: string) {
+    const snap = await this.snapshot(request);
+    const c = convert(snap.nodes, request.node, b.context as never);
+    if (!snap.nodes.has(request.node))
+      return { c, error: "root_not_on_branch" } as const;
+    const top = c.bindings[request.node];
+    if (!top) return { c, error: "root_has_no_lean_block" } as const;
     // A rejected root is reported with every node's own reason; nothing is guessed.
     if (top.role !== "theorem")
       return { c, error: `root_${top.reason ?? "not_a_theorem"}` } as const;
@@ -260,16 +264,19 @@ export class Worker {
         t.goal = goal.key;
       }
     }
-    if (!goals[b.request!.node])
+    if (!goals[request.node])
       return { c, error: `root_${top.reason ?? "unresolved"}` } as const;
+    // Every branch of a project proves the same theorem.
+    if (expectedRoot && String(goals[request.node].key) !== expectedRoot)
+      return { c, error: "root_statement_differs" } as const;
     const certs: unknown[] = [];
     for (const id of c.theorems) {
       const cert = await this.submitNode(b, c, id, goals);
       if (cert) certs.push(cert);
     }
     const { contract, identity } = requestContract(
-      this.environment(b),
-      b.request!,
+      this.environment(b, request),
+      request,
       snap.nodes,
       c,
       snap.version,
@@ -283,6 +290,43 @@ export class Worker {
       version: snap.version,
       error: undefined,
     };
+  }
+  /** Record a branch conversion on the board (inside a checkpoint). */
+  private applyBind(
+    b: Board,
+    name: string,
+    bound: Awaited<ReturnType<Worker["bind"]>>,
+  ) {
+    const branch = attached(b, name);
+    branch.nodes = bound.c.bindings;
+    if (bound.error !== undefined) {
+      Object.assign(branch.request, { bound: false, error: bound.error });
+      return;
+    }
+    const root = identitySchema.parse(bound.goals[branch.request.node]);
+    // The first attached branch fixes the project's root goal.
+    if (!b.root) {
+      b.root = root.key;
+      addGoal(b, b.root, root, b.title);
+    }
+    requireThat(b.root === root.key, "root_statement_differs");
+    for (const [id, goal] of Object.entries(bound.goals))
+      addGoal(
+        b,
+        String(goal.key),
+        identitySchema.parse(goal),
+        bound.c.bindings[id].title,
+      );
+    Object.assign(branch.request, {
+      bound: true,
+      contract: bound.contract,
+      identity: bound.identity,
+      stale: false,
+      checked_version: bound.version,
+    });
+    delete branch.request.error;
+    for (const cert of bound.certs) ingest(b, cert);
+    derivePicks(b, branch);
   }
   async tick() {
     await this.store.scheduleSync();
@@ -326,38 +370,20 @@ export class Worker {
           id: b.id,
           members: [this.leanActor, ...b.members],
         });
-        const bound =
-          b.request && !b.request.bound ? await this.bind(b) : undefined;
+        // Branches submitted before the board was ready (at least the creating one).
+        const bound: [string, Awaited<ReturnType<Worker["bind"]>>][] = [];
+        let root = b.root || undefined;
+        for (const [name, branch] of Object.entries(b.branches ?? {}))
+          if (!branch.request.bound) {
+            const r = await this.bind(b, branch.request, root);
+            if (r.error === undefined)
+              root ??= String(r.goals[branch.request.node].key);
+            bound.push([name, r]);
+          }
         await this.store.checkpoint(
           j,
           (b) => {
-            if (bound?.error !== undefined) {
-              b.nodes = bound.c.bindings;
-              b.request!.error = bound.error;
-              b.sync_error = bound.error;
-              return;
-            }
-            if (bound) {
-              const root = bound.goals[b.request!.node];
-              b.root = String(root.key);
-              addGoal(b, b.root, identitySchema.parse(root), b.title);
-              for (const [id, goal] of Object.entries(bound.goals))
-                addGoal(
-                  b,
-                  String(goal.key),
-                  identitySchema.parse(goal),
-                  bound.c.bindings[id].title,
-                );
-              b.nodes = bound.c.bindings;
-              Object.assign(b.request!, {
-                bound: true,
-                contract: bound.contract,
-                identity: bound.identity,
-                stale: false,
-                checked_version: bound.version,
-              });
-              for (const cert of bound.certs) ingest(b, cert);
-            }
+            for (const [name, r] of bound) this.applyBind(b, name, r);
             b.ready = true;
             delete b.sync_error;
           },
@@ -365,16 +391,28 @@ export class Worker {
         );
         return;
       }
+      case "attach": {
+        const name = String(j.payload.branch);
+        const r = await this.bind(
+          b,
+          attached(b, name).request,
+          b.root || undefined,
+        );
+        await this.store.checkpoint(j, (b) => this.applyBind(b, name, r), true);
+        return;
+      }
       case "submit_node": {
         const id = String(j.payload.node);
-        const snap = await this.snapshot(b);
-        const c = convert(snap.nodes, b.request!.node, b.context as never);
+        const name = String(j.payload.branch);
+        const branch = attached(b, name);
+        const snap = await this.snapshot(branch.request);
+        const c = convert(snap.nodes, branch.request.node, b.context as never);
         const binding = c.bindings[id];
         requireThat(binding, "not_found", 404);
         requireThat(binding.role === "theorem", "not_a_theorem_node");
         // Definitions keep their IDs from binding time; an edited definition node makes
         // the whole request stale instead (contract proof-environment.v1).
-        for (const [nid, prior] of Object.entries(b.nodes ?? {}))
+        for (const [nid, prior] of Object.entries(branch.nodes))
           if (c.bindings[nid]?.role === "definition" && prior.definition_ids) {
             c.bindings[nid].definition_ids = prior.definition_ids;
             c.bindings[nid].state =
@@ -417,8 +455,10 @@ export class Worker {
                 identitySchema.parse(goals[id]),
                 binding.title,
               );
-            b.nodes = { ...b.nodes, [id]: binding };
+            const branch = attached(b, name);
+            branch.nodes = { ...branch.nodes, [id]: binding };
             if (cert) ingest(b, cert);
+            derivePicks(b, branch);
           },
           true,
         );
@@ -515,21 +555,36 @@ export class Worker {
             throw e;
           }
         }
-        // Plan §9: a changed statement must not keep showing an old certification.
-        let stale: { stale: boolean; version: string } | undefined;
-        if (b.request?.bound && b.request.contract && this.terminus) {
-          const snap = await this.snapshot(b);
-          stale = {
-            stale: isStale(b.request.contract, snap.nodes),
-            version: snap.version,
-          };
-        }
+        // Plan §9: a changed statement must not keep showing an old certification. Each
+        // attached branch is checked against its own document.
+        const stale: Record<string, { stale: boolean; version?: string }> = {};
+        if (this.terminus)
+          for (const [name, branch] of Object.entries(b.branches ?? {})) {
+            const contract = branch.request.contract;
+            if (!branch.request.bound || !contract) continue;
+            try {
+              const snap = await this.snapshot(branch.request);
+              stale[name] = {
+                stale: isStale(contract, snap.nodes),
+                version: snap.version,
+              };
+            } catch (e) {
+              // A deleted branch can no longer be accepted; the others still sync.
+              if (!(
+                e instanceof RemoteError && e.code === "document_not_found"
+              ))
+                throw e;
+              stale[name] = { stale: true };
+            }
+          }
         await this.store.checkpoint(
           j,
           (b) => {
-            if (stale && b.request) {
-              b.request.stale = stale.stale;
-              b.request.checked_version = stale.version;
+            for (const [name, s] of Object.entries(stale)) {
+              if (!b.branches || !Object.hasOwn(b.branches, name)) continue;
+              b.branches[name].request.stale = s.stale;
+              if (s.version)
+                b.branches[name].request.checked_version = s.version;
             }
             for (const id of unavailable)
               if (b.facts[id]) b.facts[id].available = false;
@@ -667,29 +722,32 @@ export class Worker {
         const rid = String(j.payload.run);
         const run = b.runs[rid];
         requireThat(
-          run?.status === "certified" && run.certification_id && b.request,
+          run?.status === "certified" && run.certification_id,
           "not_certified",
         );
+        const name = run.branch!;
+        const branch = attached(b, name);
         const batch = batchId(run);
-        const done = b.writebacks?.[batch];
+        const done = branch.writebacks[batch];
         if (done?.status === "committed") {
           await this.store.checkpoint(j, () => {}, true);
           return;
         }
-        const snap = await this.snapshot(b);
+        const snap = await this.snapshot(branch.request);
         const record = (w: Writeback) =>
           this.store.checkpoint(
             j,
             (b) => {
-              b.writebacks = { ...b.writebacks, [w.batch_id]: w };
+              const branch = attached(b, name);
+              branch.writebacks = { ...branch.writebacks, [w.batch_id]: w };
               if (w.status !== "committed") return;
-              b.accepted = {
+              branch.accepted = {
                 certification_id: run.certification_id!,
                 revision: w.version!,
                 operation: w.batch_id,
               };
-              // The batch is the request's own result: follow the written Lean text so
-              // that it does not make the request stale.
+              // The batch is the branch's own result: follow the written Lean text so
+              // that it does not make the branch stale.
               const written = new Map(
                 (w.contract?.operations ?? []).map((o) => [
                   o.node_id,
@@ -697,20 +755,20 @@ export class Worker {
                 ]),
               );
               for (const [id, sha] of written)
-                if (b.nodes?.[id]) {
-                  b.nodes[id].lean_content_sha256 = sha;
-                  b.nodes[id].state = "certified";
+                if (Object.hasOwn(branch.nodes, id)) {
+                  branch.nodes[id].lean_content_sha256 = sha;
+                  branch.nodes[id].state = "certified";
                 }
-              const pr = b.request!.contract!.proof_request;
+              const pr = branch.request.contract!.proof_request;
               pr.data_version = w.version!;
               for (const n of [pr.root, ...pr.dependencies])
                 if (written.has(n.node_id))
                   n.lean_content_sha256 = written.get(n.node_id)!;
-              b.request!.stale = false;
+              branch.request.stale = false;
             },
             true,
           );
-        if (committed(b, snap, batch)) {
+        if (committed(branch.request, snap, batch)) {
           await record({
             ...(done ?? {
               batch_id: batch,
@@ -730,7 +788,7 @@ export class Worker {
         }
         const definitions = new Map<string, DefinitionRecord>();
         const known = new Set(
-          Object.values(b.nodes ?? {}).flatMap((n) => n.definition_ids ?? []),
+          Object.values(branch.nodes).flatMap((n) => n.definition_ids ?? []),
         );
         const pending = [...certificates.values()].flatMap(
           (c) => c.definitions ?? [],
@@ -749,7 +807,8 @@ export class Worker {
         let built;
         try {
           built = buildBatch({
-            board: b,
+            request: branch.request,
+            nodes: branch.nodes,
             run,
             snapshot: snap,
             certificates,
@@ -773,7 +832,7 @@ export class Worker {
           snap.validateChanges(built.changes);
           version = await putBatch(
             this.terminus!,
-            b,
+            branch.request,
             snap,
             built.changes,
             batch,
@@ -834,14 +893,14 @@ export async function resolveProject(
 /** One TerminusDB commit for the whole batch, guarded by the snapshot's data version. */
 async function putBatch(
   terminus: Terminus,
-  b: Board,
+  request: ProofRequest,
   snap: Snapshot,
   changes: import("./docs/model.js").Node[],
   batch: string,
   actor: string,
 ) {
   return terminus
-    .database(b.request!.database, b.request!.branch)
+    .database(request.database, request.branch)
     .putBundle(
       changes,
       null,

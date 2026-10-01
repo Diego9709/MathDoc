@@ -39,6 +39,14 @@ export const nodeRefSchema = z
   })
   .strict();
 export type NodeRef = z.infer<typeof nodeRefSchema>;
+// Branch names key board.branches: disallow special JS dictionary keys defensively.
+const branchName = z
+  .string()
+  .regex(/^[\w-]+$/)
+  .max(200)
+  .refine((x) => !["__proto__", "constructor", "prototype"].includes(x), {
+    message: "reserved branch name",
+  });
 export const createSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
@@ -53,14 +61,17 @@ export const createSchema = z
   })
   .strict();
 export type Create = z.infer<typeof createSchema>;
-/** A project bound to a document node (a ProofRequest); the environment comes from the branch. */
+/**
+ * Submit a branch of a database: creates the database's project board rooted at `node`, or
+ * attaches the branch to the existing one. The environment comes from the database.
+ */
 export const documentCreateSchema = z
   .object({
     title: z.string().trim().min(1).max(200).optional(),
     document: z
       .object({
         database: z.string().regex(/^[\w-]+$/),
-        branch: z.string().regex(/^[\w-]+$/),
+        branch: branchName,
         node: z.string().uuid(),
       })
       .strict(),
@@ -114,6 +125,8 @@ export interface Run {
   id: string;
   route: Route;
   component: string;
+  /** Project boards: the branch whose picks chose the route and which receives the writeback. */
+  branch?: string;
   plan_id?: string;
   status: "queued" | "running" | "failed" | "certified";
   certification_id?: string;
@@ -144,11 +157,38 @@ export interface Board {
   tasks: Record<string, Task>;
   attempts: Record<string, Attempt>;
   runs: Record<string, Run>;
-  accepted?: { certification_id: string; revision: string; operation: string };
-  /** Document-bound projects (stage 4): the ProofRequest, its nodes and writebacks. */
+  accepted?: Accepted;
+  /** Legacy per-branch proof requests (stage 4), now read-only: the ProofRequest, its nodes and writebacks. */
   request?: ProofRequest;
   nodes?: Record<string, NodeBinding>;
   writebacks?: Record<string, Writeback>;
+  /** Project boards (docs/coordination-project-model.md): one per database and environment. */
+  project?: ProjectScope;
+  branches?: Record<string, BranchState>;
+}
+export interface Accepted {
+  certification_id: string;
+  revision: string;
+  operation: string;
+}
+/** A database's proof project: one root theorem in one fixed environment. */
+export interface ProjectScope {
+  database: string;
+  environment_id: string;
+  replaces_environment_id?: string;
+  /** The root theorem node; every attached branch is converted from it. */
+  root_node: string;
+  /** Set when the database's environment changed: the board stays readable only. */
+  superseded?: boolean;
+}
+/** One branch attached to a project board: its conversion, route picks and writebacks. */
+export interface BranchState {
+  request: ProofRequest;
+  nodes: Record<string, NodeBinding>;
+  /** goal → certificate this branch's route uses; unpicked goals are chosen automatically. */
+  picks: Record<string, string>;
+  writebacks: Record<string, Writeback>;
+  accepted?: Accepted;
 }
 export function member(b: Board, actor: string) {
   requireThat(b.members.includes(actor), "not_found", 404);
@@ -156,6 +196,19 @@ export function member(b: Board, actor: string) {
 export function owner(b: Board, actor: string) {
   member(b, actor);
   requireThat(b.owner === actor, "owner_required", 403);
+}
+/** Why a board accepts no commands, if it does not. */
+export function readOnly(b: Board): string | undefined {
+  if (b.request) return "proof_request_read_only";
+  if (b.project?.superseded) return "project_superseded";
+}
+export function attached(b: Board, branch: string | undefined): BranchState {
+  requireThat(b.project, "not_a_project_board", 400);
+  requireThat(
+    branch !== undefined && b.branches && Object.hasOwn(b.branches, branch),
+    "branch_not_attached",
+  );
+  return b.branches![branch!];
 }
 export function newBoard(
   id: string,
@@ -190,7 +243,8 @@ export function newBoard(
   addGoal(b, goal.key, goal, input.proposition);
   return b;
 }
-export function newDocumentBoard(
+/** A project board for the database; the creating branch is attached by the provision job. */
+export function newProjectBoard(
   id: string,
   actor: string,
   input: DocumentCreate,
@@ -204,7 +258,7 @@ export function newDocumentBoard(
     replaces_environment_id?: string;
   },
 ): Board {
-  return {
+  const b: Board = {
     id,
     title: input.title ?? title,
     owner: actor,
@@ -213,7 +267,7 @@ export function newDocumentBoard(
     base: env.base,
     context: env.context,
     options: env.options,
-    // The root goal is resolved when the worker binds the request.
+    // The root goal is resolved when the first branch is attached.
     root: "",
     minimum_trust: env.minimum_trust,
     notes: "",
@@ -226,18 +280,43 @@ export function newDocumentBoard(
     tasks: {},
     attempts: {},
     runs: {},
-    request: {
-      ...input.document,
+    project: {
+      database: input.document.database,
       environment_id: env.environment_id,
       ...(env.replaces_environment_id
         ? { replaces_environment_id: env.replaces_environment_id }
+        : {}),
+      root_node: input.document.node,
+    },
+    branches: {},
+  };
+  b.branches![input.document.branch] = newBranchState(b, input.document.branch);
+  return b;
+}
+export function newBranchState(b: Board, branch: string): BranchState {
+  const p = b.project!;
+  return {
+    request: {
+      database: p.database,
+      branch,
+      node: p.root_node,
+      environment_id: p.environment_id,
+      ...(p.replaces_environment_id
+        ? { replaces_environment_id: p.replaces_environment_id }
         : {}),
       bound: false,
       stale: false,
     },
     nodes: {},
+    picks: {},
     writebacks: {},
   };
+}
+/** A branch's submitted nodes choose its route at their goals. */
+export function derivePicks(b: Board, branch: BranchState) {
+  for (const n of Object.values(branch.nodes))
+    if (n.goal && n.certificate && b.facts[n.certificate]?.goal === n.goal)
+      branch.picks[n.goal] = n.certificate;
 }
 export function addGoal(
   b: Board,
@@ -286,6 +365,8 @@ export function ingest(b: Board, raw: unknown) {
       (f.access.visibility === "project" && f.access.project_id === b.id),
     "fact_not_shared",
   );
+  // A project board learns its environment identity from its first attached branch.
+  requireThat(b.goals[b.root]?.identity, "project_root_unbound");
   const root = b.goals[b.root].identity!;
   for (const k of [
     "base_fingerprint",
@@ -344,12 +425,21 @@ export function activeGoals(b: Board) {
   }
   return active;
 }
-export function selectRoute(b: Board): Route {
+/** A route through active facts; a picked goal is proved only by its picked certificate. */
+export function selectRoute(
+  b: Board,
+  picks: Record<string, string> = {},
+): Route {
   const solved = new Map<string, string>();
   const steps: Step[] = [];
   let before = -1;
   const facts = Object.values(b.facts)
-    .filter((f) => f.available && f.state === "active")
+    .filter(
+      (f) =>
+        f.available &&
+        f.state === "active" &&
+        (!Object.hasOwn(picks, f.goal) || picks[f.goal] === f.id),
+    )
     .sort(
       (a, c) =>
         a.premises.length - c.premises.length || a.id.localeCompare(c.id),
@@ -475,9 +565,28 @@ export const commandSchema = z.discriminatedUnion("type", [
     })
     .strict(),
   z
-    .object({ type: z.literal("submit_node"), node: z.string().uuid() })
+    .object({
+      type: z.literal("submit_node"),
+      node: z.string().uuid(),
+      branch: branchName.optional(),
+    })
     .strict(),
-  z.object({ type: z.literal("assemble"), component: short }).strict(),
+  z.object({ type: z.literal("attach"), branch: branchName }).strict(),
+  z
+    .object({
+      type: z.literal("pick"),
+      branch: branchName,
+      goal: short,
+      certificate: short.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("assemble"),
+      component: short,
+      branch: branchName.optional(),
+    })
+    .strict(),
   z.object({ type: z.literal("retry"), run: short }).strict(),
   z.object({ type: z.literal("accept"), run: short }).strict(),
 ]);
@@ -495,6 +604,8 @@ export function command(
   now: number,
 ): { result: unknown; job?: JobInput } {
   member(b, actor);
+  const frozen = readOnly(b);
+  requireThat(!frozen, frozen!);
   expire(b, now);
   requireThat(b.ready || c.type === "sync", "project_initializing");
   switch (c.type) {
@@ -641,14 +752,46 @@ export function command(
         job: { kind: "submit", payload: { ...c } },
       };
     case "submit_node": {
-      requireThat(b.request?.bound, "no_document_binding");
-      const n = b.nodes?.[c.node];
+      const branch = attached(b, c.branch);
+      requireThat(branch.request.bound, "branch_not_bound");
+      const n = Object.hasOwn(branch.nodes, c.node)
+        ? branch.nodes[c.node]
+        : undefined;
       requireThat(n, "not_found", 404);
       requireThat(n.role === "theorem", "not_a_theorem_node");
       return {
         result: { queued: true },
-        job: { kind: "submit_node", payload: { node: c.node } },
+        job: {
+          kind: "submit_node",
+          payload: { node: c.node, branch: c.branch },
+        },
       };
+    }
+    case "attach": {
+      // Document roles are checked by the HTTP layer; re-attaching converts the branch again.
+      requireThat(b.project, "not_a_project_board", 400);
+      b.branches ??= {};
+      if (!Object.hasOwn(b.branches, c.branch))
+        b.branches[c.branch] = newBranchState(b, c.branch);
+      return {
+        result: { queued: true },
+        job: { kind: "attach", payload: { branch: c.branch } },
+      };
+    }
+    case "pick": {
+      owner(b, actor);
+      const branch = attached(b, c.branch);
+      requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
+      if (c.certificate === null) delete branch.picks[c.goal];
+      else {
+        const f = Object.hasOwn(b.facts, c.certificate)
+          ? b.facts[c.certificate]
+          : undefined;
+        requireThat(f, "not_found", 404);
+        requireThat(f.goal === c.goal, "certificate_goal_mismatch");
+        branch.picks[c.goal] = c.certificate;
+      }
+      return { result: branch.picks };
     }
     case "assemble": {
       owner(b, actor);
@@ -658,12 +801,19 @@ export function command(
         ),
         "assembly_in_progress",
       );
+      let picks: Record<string, string> = {};
+      if (b.project) {
+        const branch = attached(b, c.branch);
+        requireThat(branch.request.bound, "branch_not_bound");
+        picks = branch.picks;
+      }
       const id = randomUUID();
       const run: Run = {
         id,
-        route: selectRoute(b),
+        route: selectRoute(b, picks),
         component: c.component,
         status: "queued",
+        ...(b.project ? { branch: c.branch } : {}),
       };
       b.runs[id] = run;
       return { result: run, job: { kind: "assemble", payload: { run: id } } };
@@ -694,10 +844,13 @@ export function command(
     case "accept":
       owner(b, actor);
       requireThat(b.runs[c.run]?.status === "certified", "not_certified");
-      if (b.request) {
+      if (b.project) {
         // Plan §9: a changed statement keeps old results in history but never certifies
         // the new version. Writeback re-checks every node before committing.
-        requireThat(!b.request.stale, "proof_request_stale");
+        requireThat(
+          !attached(b, b.runs[c.run].branch).request.stale,
+          "proof_request_stale",
+        );
         return {
           result: { queued: true },
           job: { kind: "writeback", payload: { run: c.run } },

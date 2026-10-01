@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS mdc_command(project text NOT NULL REFERENCES mdc_proj
 CREATE TABLE IF NOT EXISTS mdc_event(sequence bigserial PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, revision bigint NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS mdc_job(id text PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL DEFAULT 'queued', epoch integer NOT NULL DEFAULT 0, tries integer NOT NULL DEFAULT 0, expires timestamptz, available_at timestamptz NOT NULL DEFAULT now(), error text, created_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS mdc_job_queue ON mdc_job(status,available_at);
+CREATE UNIQUE INDEX IF NOT EXISTS mdc_project_scope ON mdc_project((body->'project'->>'database'),(body->'project'->>'environment_id'));
 ${ENVIRONMENT_MIGRATION}`;
+// Boards that take part in scheduling: not a stage 4 proof request, not superseded.
+const LIVE = `NOT (p.body ? 'request') AND NOT COALESCE((p.body->'project'->>'superseded')::boolean,false)`;
 export class Store {
   pool: pg.Pool;
   constructor(dsn: string) {
@@ -58,6 +61,10 @@ export class Store {
       await this.enqueue(c, b.id, b.owner, "provision", {});
     });
   }
+  /**
+   * The actor's boards; with a branch, the database's project boards (current first, then
+   * superseded) followed by the branch's stage 4 proof requests.
+   */
   async list(
     actor: string,
     document?: { database: string; branch: string; node?: string },
@@ -65,8 +72,10 @@ export class Store {
     if (document)
       return (
         await this.pool.query(
-          `SELECT body FROM mdc_project WHERE body->'members' ? $1 AND body->'request'->>'database'=$2
-           AND body->'request'->>'branch'=$3 AND ($4::text IS NULL OR body->'nodes' ? $4) ORDER BY id`,
+          `SELECT p.body FROM mdc_project p WHERE p.body->'members' ? $1 AND (
+             (p.body->'project'->>'database'=$2 AND ($4::text IS NULL OR p.body->'branches'->$3->'nodes' ? $4))
+             OR (p.body->'request'->>'database'=$2 AND p.body->'request'->>'branch'=$3 AND ($4::text IS NULL OR p.body->'nodes' ? $4)))
+           ORDER BY CASE WHEN ${LIVE} THEN 0 WHEN p.body ? 'project' THEN 1 ELSE 2 END, p.id`,
           [actor, document.database, document.branch, document.node ?? null],
         )
       ).rows.map((r) => r.body);
@@ -77,14 +86,131 @@ export class Store {
       )
     ).rows.map((r) => r.body);
   }
-  /** Every project bound to a branch, for the document view's certification column. */
+  /** Boards that can certify a branch's nodes: the database's project boards and the branch's bound proof requests. */
   async bound(database: string, branch: string): Promise<Board[]> {
     return (
       await this.pool.query(
-        "SELECT body FROM mdc_project WHERE body->'request'->>'database'=$1 AND body->'request'->>'branch'=$2 AND (body->'request'->>'bound')::boolean ORDER BY id",
+        `SELECT body FROM mdc_project WHERE body->'project'->>'database'=$1
+           OR (body->'request'->>'database'=$1 AND body->'request'->>'branch'=$2 AND (body->'request'->>'bound')::boolean)
+         ORDER BY id`,
         [database, branch],
       )
     ).rows.map((r) => r.body);
+  }
+  /** The database's project board for an environment, if it exists. */
+  async project(database: string, environmentId: string) {
+    return (
+      await this.pool.query(
+        "SELECT body FROM mdc_project WHERE body->'project'->>'database'=$1 AND body->'project'->>'environment_id'=$2",
+        [database, environmentId],
+      )
+    ).rows[0]?.body as Board | undefined;
+  }
+  /**
+   * Submit a branch: create the database's project board (its provision job attaches the
+   * branch), or attach the branch to the existing board. Replaying (actor, key) with the
+   * same request returns the first outcome without queuing another attach.
+   */
+  async submitBranch(input: {
+    actor: string;
+    key: string;
+    hash: string;
+    database: string;
+    environmentId: string;
+    branch: string;
+    create: () => Board;
+  }): Promise<{ board: Board; created: boolean }> {
+    const { actor, key, hash } = input;
+    for (let attempt = 0; ; attempt++)
+      try {
+        return await this.transaction(async (c) => {
+          const row = (
+            await c.query(
+              "SELECT body FROM mdc_project WHERE body->'project'->>'database'=$1 AND body->'project'->>'environment_id'=$2 FOR UPDATE",
+              [input.database, input.environmentId],
+            )
+          ).rows[0];
+          if (!row) {
+            const b = input.create();
+            await c.query("INSERT INTO mdc_project VALUES($1,$2)", [b.id, b]);
+            await this.enqueue(c, b.id, b.owner, "provision", {});
+            await c.query("INSERT INTO mdc_command VALUES($1,$2,$3,$4,$5)", [
+              b.id,
+              actor,
+              key,
+              hash,
+              { created: true },
+            ]);
+            return { board: b, created: true };
+          }
+          const b: Board = row.body;
+          const old = (
+            await c.query(
+              "SELECT hash,result FROM mdc_command WHERE project=$1 AND actor=$2 AND key=$3",
+              [b.id, actor, key],
+            )
+          ).rows[0];
+          if (old) {
+            requireThat(old.hash === hash, "idempotency_conflict");
+            return { board: b, created: old.result.created === true };
+          }
+          // Reading main already shows the board exists; joining it is the owner's decision.
+          requireThat(b.members.includes(actor), "not_a_project_member", 403);
+          const out = command(
+            b,
+            actor,
+            { type: "attach", branch: input.branch },
+            await this.now(c),
+          );
+          const job = await this.enqueue(
+            c,
+            b.id,
+            actor,
+            out.job!.kind,
+            out.job!.payload,
+          );
+          await this.save(c, b, actor, "attach");
+          await c.query("INSERT INTO mdc_command VALUES($1,$2,$3,$4,$5)", [
+            b.id,
+            actor,
+            key,
+            hash,
+            { created: false, job },
+          ]);
+          return { board: b, created: false };
+        });
+      } catch (e) {
+        // Two first submissions raced; the scope index admitted one board. Attach to it.
+        if ((e as { code?: string }).code === "23505" && attempt === 0)
+          continue;
+        throw e;
+      }
+  }
+  /** After an environment change, the database's boards for other environments stop accepting commands. */
+  async supersede(
+    c: pg.PoolClient,
+    database: string,
+    environmentId: string,
+    actor: string,
+  ) {
+    const rows = (
+      await c.query(
+        `SELECT p.body FROM mdc_project p WHERE p.body->'project'->>'database'=$1
+           AND p.body->'project'->>'environment_id'<>$2 AND ${LIVE} FOR UPDATE`,
+        [database, environmentId],
+      )
+    ).rows;
+    for (const r of rows) {
+      const b: Board = r.body;
+      b.project!.superseded = true;
+      await this.save(c, b, actor, "superseded");
+    }
+  }
+  private async now(c: pg.PoolClient) {
+    return Number(
+      (await c.query("SELECT extract(epoch FROM clock_timestamp())*1000 AS ms"))
+        .rows[0].ms,
+    );
   }
   async get(id: string, actor: string): Promise<Board> {
     const row = (
@@ -138,14 +264,7 @@ export class Store {
         return old.result;
       }
       requireThat(b.revision === revision, "revision_conflict");
-      const now = Number(
-        (
-          await c.query(
-            "SELECT extract(epoch FROM clock_timestamp())*1000 AS ms",
-          )
-        ).rows[0].ms,
-      );
-      const out = command(b, actor, input, now);
+      const out = command(b, actor, input, await this.now(c));
       const job = out.job
         ? await this.enqueue(c, id, actor, out.job.kind, out.job.payload)
         : undefined;
@@ -242,6 +361,9 @@ export class Store {
         ])
       ).rows[0].body;
       if (j.kind === "sync" || j.kind === "provision") b.sync_error = error;
+      const name = String(j.payload.branch);
+      if (j.kind === "attach" && b.branches && Object.hasOwn(b.branches, name))
+        if (!willRetry) b.branches[name].request.error = error;
       if (j.kind === "assemble" && !willRetry) {
         const r = b.runs[String(j.payload.run)];
         if (r) {
@@ -257,7 +379,7 @@ export class Store {
     await this.transaction(async (c) => {
       await c.query("SELECT pg_advisory_xact_lock(682193119)");
       await c.query(
-        `INSERT INTO mdc_job(id,project,actor,kind,payload) SELECT 'sync-'||p.id||'-'||gen_random_uuid(),p.id,p.body->>'owner','sync','{}'::jsonb FROM mdc_project p WHERE p.body->>'ready'='true' AND COALESCE((p.body->>'last_sync')::bigint,0)<extract(epoch FROM now())*1000-15000 AND NOT EXISTS(SELECT 1 FROM mdc_job j WHERE j.project=p.id AND j.kind='sync' AND (j.status IN ('queued','running') OR j.created_at>now()-interval '15 seconds'))`,
+        `INSERT INTO mdc_job(id,project,actor,kind,payload) SELECT 'sync-'||p.id||'-'||gen_random_uuid(),p.id,p.body->>'owner','sync','{}'::jsonb FROM mdc_project p WHERE p.body->>'ready'='true' AND ${LIVE} AND COALESCE((p.body->>'last_sync')::bigint,0)<extract(epoch FROM now())*1000-15000 AND NOT EXISTS(SELECT 1 FROM mdc_job j WHERE j.project=p.id AND j.kind='sync' AND (j.status IN ('queued','running') OR j.created_at>now()-interval '15 seconds'))`,
       );
     });
   }

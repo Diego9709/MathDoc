@@ -21,8 +21,8 @@ nodes:      show REF | new -t TITLE [--parent REF] | del REF | rename REF TITLE
             edit REF [--type text|lean|rocq|latex] [--delete]   (source from stdin)
             dep add REF -t TARGET | dep rm REF -t TARGET... | dep show|refs REF [-d DEPTH]
             dep leaf REF | dep candidates REF [QUERY] [-n N] | metric ior REF
-proof:      proof env [set]             (set reads the environment JSON from stdin)
-            proof submit REF [--budget N] [--members a,b]
+proof:      proof env [set]             (the database's environment; set reads JSON from stdin)
+            proof submit REF [--budget N] [--members a,b]   (create the project or attach the branch)
             proof list [REF] | proof status ID | proof command ID   (command JSON from stdin)
 Write commands take --revision REV to require the revision printed by show.`;
 
@@ -301,17 +301,15 @@ export async function main(
     case "proof": {
       const [sub, ref] = args;
       const [database, branchName] = branch().split("/");
+      // The environment belongs to the database; -p only names it.
       if (sub === "env" && ref === "set")
         return request(
           "PUT",
-          coordination(`/environments/${database}/${branchName}`),
+          coordination(`/environments/${database}`),
           JSON.parse(await input()),
         );
       if (sub === "env")
-        return request(
-          "GET",
-          coordination(`/environments/${database}/${branchName}`),
-        );
+        return request("GET", coordination(`/environments/${database}`));
       if (sub === "submit") {
         const n = await node(need(ref, "REF"));
         return request(

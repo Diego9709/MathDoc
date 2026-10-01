@@ -29,8 +29,11 @@ import {
 import { trustSchema } from "./domain.js";
 import type { Node } from "./docs/model.js";
 
+// mdc_environment keeps the per-branch environments of stage 4 (read only); a project's
+// environment is per database (docs/coordination-project-model.md, decision A).
 export const ENVIRONMENT_MIGRATION = `
 CREATE TABLE IF NOT EXISTS mdc_environment(database text NOT NULL, branch text NOT NULL, body jsonb NOT NULL, PRIMARY KEY(database, branch));
+CREATE TABLE IF NOT EXISTS mdc_project_environment(database text PRIMARY KEY, body jsonb NOT NULL);
 `;
 
 const optionValue = z.union([z.string(), z.number(), z.boolean()]);
@@ -62,26 +65,35 @@ export function environmentId(
   });
 }
 
-/** One proof environment per document branch. Changing it never rewrites old requests. */
+/**
+ * One proof environment per database: it fixes what the project's goals mean. Until one is
+ * set, the stage 4 environment of the `main` branch is used. Changing it never rewrites old
+ * boards; the caller supersedes them.
+ */
 export class Environments {
   constructor(private pool: pg.Pool) {}
-  async get(database: string, branch: string): Promise<Environment | null> {
+  async get(
+    database: string,
+    db: Pick<pg.Pool, "query"> = this.pool,
+  ): Promise<Environment | null> {
     const row = (
-      await this.pool.query(
-        "SELECT body FROM mdc_environment WHERE database=$1 AND branch=$2",
-        [database, branch],
+      await db.query(
+        `SELECT body, 0 AS o FROM mdc_project_environment WHERE database=$1
+         UNION ALL SELECT body, 1 FROM mdc_environment WHERE database=$1 AND branch='main'
+         ORDER BY o LIMIT 1`,
+        [database],
       )
     ).rows[0];
     return row ? (row.body as Environment) : null;
   }
   async put(
     database: string,
-    branch: string,
     input: EnvironmentInput,
     base: z.infer<typeof baseRefSchema>,
     actor: string,
+    db: Pick<pg.Pool, "query"> = this.pool,
   ): Promise<Environment> {
-    const prior = await this.get(database, branch);
+    const prior = await this.get(database, db);
     const env: Environment = {
       ...input,
       base,
@@ -93,9 +105,9 @@ export class Environments {
       env.replaces_environment_id = prior.environment_id;
     else if (prior?.replaces_environment_id)
       env.replaces_environment_id = prior.replaces_environment_id;
-    await this.pool.query(
-      "INSERT INTO mdc_environment VALUES($1,$2,$3) ON CONFLICT (database,branch) DO UPDATE SET body=EXCLUDED.body",
-      [database, branch, env],
+    await db.query(
+      "INSERT INTO mdc_project_environment VALUES($1,$2) ON CONFLICT (database) DO UPDATE SET body=EXCLUDED.body",
+      [database, env],
     );
     return env;
   }

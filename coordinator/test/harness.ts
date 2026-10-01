@@ -46,18 +46,24 @@ export async function isolated() {
   };
 }
 
-/** One coordinator deployment: API process state and a worker. Recreated to simulate restarts. */
-export async function deploy(url: string) {
+/**
+ * One coordinator deployment: API process state and a worker. Recreated to simulate
+ * restarts. `leanground` overrides the LeanGround service (tests with a contract double).
+ */
+export async function deploy(
+  url: string,
+  leanground = { url: env.lean!, token: env.leanToken! },
+) {
   const store = new Store(url);
   await store.migrate();
-  const lean = new LeanGround(env.lean!, env.leanToken!);
+  const lean = new LeanGround(leanground.url, leanground.token);
   const cfg: Config = {
     dsn: url,
     host: "127.0.0.1",
     port: 0,
     actors,
-    leanUrl: env.lean!,
-    leanToken: env.leanToken!,
+    leanUrl: leanground.url,
+    leanToken: leanground.token,
     leanActor: "coordinator",
     terminusUrl: env.terminus,
     terminusUser: "admin",
@@ -97,8 +103,8 @@ export async function deploy(url: string) {
 
 export type Deployment = Awaited<ReturnType<typeof deploy>>;
 
-/** HTTP helpers for one document database; `current` follows redeployments. */
-export function client(current: () => Deployment, db: string) {
+/** HTTP helpers for one document branch; `current` follows redeployments. */
+export function client(current: () => Deployment, db: string, branch = "main") {
   const dep = {
     get base() {
       return current().base;
@@ -142,7 +148,7 @@ export function client(current: () => Deployment, db: string) {
     ok(
       who,
       method,
-      `/p/${db}/main/api${route}`,
+      `/p/${db}/${branch}/api${route}`,
       body,
       revision ? { "if-match": `"${revision}"` } : {},
     );

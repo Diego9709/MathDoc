@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { z } from "zod";
@@ -13,11 +13,12 @@ import {
   commandSchema,
   documentCreateSchema,
   newBoard,
-  newDocumentBoard,
+  newProjectBoard,
   owner,
   requireThat,
   nodeRefSchema,
   ingest,
+  attached,
   type Board,
 } from "./domain.js";
 import { fetchBase, resolveProject } from "./worker.js";
@@ -124,6 +125,35 @@ export function server(
         throw e;
       }
   };
+  const canRead = async (actor: string, database: string, branch: string) => {
+    try {
+      await documentRole(actor, database, branch, "read");
+      return true;
+    } catch (e) {
+      if (e instanceof DocError) return false;
+      throw e;
+    }
+  };
+  // The branch whose read access guards a board: `main` for a project board (the project
+  // belongs to the whole database), the bound branch for a stage 4 proof request.
+  const home = (b: Board) =>
+    b.project
+      ? { database: b.project.database, branch: "main" }
+      : b.request
+        ? { database: b.request.database, branch: b.request.branch }
+        : undefined;
+  // Branches the actor cannot read are left out of a project board, with their runs.
+  const visible = async (actor: string, b: Board): Promise<Board> => {
+    if (!b.project || !b.branches) return b;
+    const out = structuredClone(b);
+    for (const name of Object.keys(b.branches))
+      if (!(await canRead(actor, b.project.database, name)))
+        delete out.branches![name];
+    for (const [id, r] of Object.entries(out.runs))
+      if (r.branch && !Object.hasOwn(out.branches!, r.branch))
+        delete out.runs[id];
+    return out;
+  };
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -184,25 +214,30 @@ export function server(
         send(res, 200, await docs.load(ref));
         return;
       }
-      const envPath = /^\/api\/environments\/([\w-]+)\/([\w-]+)$/.exec(path);
+      const envPath = /^\/api\/environments\/([\w-]+)$/.exec(path);
       if (envPath) {
-        const [, database, branch] = envPath;
+        const [, database] = envPath;
         if (method === "GET") {
-          await documentRole(actor, database, branch, "read");
-          const env = await environments.get(database, branch);
+          await documentRole(actor, database, "main", "read");
+          const env = await environments.get(database);
           requireThat(env, "environment_not_configured", 404);
           send(res, 200, env);
           return;
         }
         requireThat(method === "PUT", "method_not_allowed", 405);
-        // The environment decides what every new ProofRequest means: owners only.
-        await documentRole(actor, database, branch, "member_manage");
+        // The environment decides what the project's goals mean: owners only. A change
+        // starts a new project board; the old one stays readable.
+        await documentRole(actor, database, "main", "member_manage");
         const input = environmentInputSchema.parse(await body(req));
         const base = await fetchBase(lean, input.base_key);
         send(
           res,
           200,
-          await environments.put(database, branch, input, base, actor),
+          await store.transaction(async (c) => {
+            const env = await environments.put(database, input, base, actor, c);
+            await store.supersede(c, database, env.environment_id, actor);
+            return env;
+          }),
         );
         return;
       }
@@ -212,69 +247,75 @@ export function server(
         const branch = q.get("branch");
         if (database && branch) {
           await documentRole(actor, database, branch, "read");
-          send(
-            res,
-            200,
-            await store.list(actor, {
-              database,
-              branch,
-              node: q.get("node") ?? undefined,
-            }),
-          );
+          const boards = await store.list(actor, {
+            database,
+            branch,
+            node: q.get("node") ?? undefined,
+          });
+          const out: Board[] = [];
+          for (const b of boards) {
+            const h = home(b)!;
+            if (await canRead(actor, h.database, h.branch))
+              out.push(await visible(actor, b));
+          }
+          send(res, 200, out);
         } else send(res, 200, await store.list(actor));
         return;
       }
       if (path === "/api/projects" && method === "POST") {
         const raw = await body(req);
         if (raw && typeof raw === "object" && "document" in raw) {
+          // Submit a branch: the first submission creates the database's project board
+          // rooted at `node`; later ones attach their branch to it (converted from the root).
           const input = documentCreateSchema.parse(raw);
           const { database, branch, node } = input.document;
           await documentRole(actor, database, branch, "proof_request_create");
-          requireThat(
-            input.members.every((m) => Object.hasOwn(cfg.actors, m)),
-            "unknown_member",
-            400,
-          );
-          await membersCanRead(input.members, database, branch);
-          const env = await environments.get(database, branch);
+          const env = await environments.get(database);
           requireThat(env, "environment_not_configured");
           requireThat(documents, "documents_not_configured", 503);
           const snap = await documents.terminus
             .database(database, branch)
             .load();
-          const root = snap.nodes.get(node);
-          requireThat(root, "document_not_found", 404);
-          requireThat(
-            root.blocks.some((x) => x.srctype === "lean"),
-            "root_has_no_lean_block",
-          );
-          const k = key(req);
-          const digest = createHash("sha256")
-            .update(JSON.stringify({ input, env: env.environment_id }))
-            .digest("hex");
-          const id =
-            "mdc-" +
-            createHash("sha256")
-              .update(`${actor}\0${k}`)
-              .digest("hex")
-              .slice(0, 32);
-          const b = {
-            ...newDocumentBoard(id, actor, input, root.title, env),
-            creation_hash: digest,
-          };
-          try {
-            await store.create(b);
-          } catch (e) {
-            if ((e as { code?: string }).code !== "23505") throw e;
-            const existing = await store.get(id, actor);
+          const existing = await store.project(database, env.environment_id);
+          if (!existing) {
+            // Creating the project fixes the database's root theorem: owners only.
+            await documentRole(actor, database, "main", "member_manage");
             requireThat(
-              (existing as typeof b).creation_hash === digest,
-              "idempotency_conflict",
+              input.members.every((m) => Object.hasOwn(cfg.actors, m)),
+              "unknown_member",
+              400,
             );
-            send(res, 200, existing);
-            return;
-          }
-          send(res, 201, b);
+            await membersCanRead(input.members, database, "main");
+            const root = snap.nodes.get(node);
+            requireThat(root, "document_not_found", 404);
+            requireThat(
+              root.blocks.some((x) => x.srctype === "lean"),
+              "root_has_no_lean_block",
+            );
+          } else
+            requireThat(
+              snap.nodes.has(existing.project!.root_node),
+              "root_not_on_branch",
+            );
+          const out = await store.submitBranch({
+            actor,
+            key: key(req),
+            hash: createHash("sha256")
+              .update(JSON.stringify({ input, env: env.environment_id }))
+              .digest("hex"),
+            database,
+            environmentId: env.environment_id,
+            branch,
+            create: () =>
+              newProjectBoard(
+                `mdc-${randomUUID().replaceAll("-", "")}`,
+                actor,
+                input,
+                snap.nodes.get(node)!.title,
+                env,
+              ),
+          });
+          send(res, out.created ? 201 : 200, await visible(actor, out.board));
           return;
         }
         requireThat(cfg.actors[actor].admin, "admin_required", 403);
@@ -345,30 +386,31 @@ export function server(
       requireThat(match, "not_found", 404);
       const [, id, operation, child, draft] = match;
       const b: Board = await store.get(id, actor);
-      if (b.request) {
-        try {
-          await documentRole(
-            actor,
-            b.request.database,
-            b.request.branch,
-            "read",
-          );
-        } catch (e) {
-          if (e instanceof DocError) throw new Fault("not_found", 404);
-          throw e;
-        }
-      }
+      const h = home(b);
+      if (h && !(await canRead(actor, h.database, h.branch)))
+        throw new Fault("not_found", 404);
       if (operation === "nodes" && child && draft && method === "GET") {
         // Agents start from the converted node: placeholders, definitions and identity.
-        requireThat(b.request?.bound && documents, "no_document_binding");
-        const snap = await documents!.terminus
-          .database(b.request!.database, b.request!.branch)
+        requireThat(documents, "documents_not_configured", 503);
+        let request = b.request;
+        let nodes = b.nodes ?? {};
+        if (b.project) {
+          const name = url.searchParams.get("branch");
+          requireThat(name, "branch_required", 400);
+          if (!(await canRead(actor, b.project.database, name)))
+            throw new Fault("not_found", 404);
+          ({ request, nodes } = attached(b, name));
+        }
+        requireThat(request?.bound, "no_document_binding");
+        const snap = await documents.terminus
+          .database(request.database, request.branch)
           .load();
-        const c = convert(snap.nodes, b.request!.node, b.context as never);
+        const c = convert(snap.nodes, request.node, b.context as never);
         const n = c.bindings[child];
         requireThat(n, "not_found", 404);
         requireThat(n.role === "theorem", n.reason ?? "not_a_theorem_node");
-        const goalOf = (nid: string) => b.nodes?.[nid]?.goal;
+        const goalOf = (nid: string) =>
+          Object.hasOwn(nodes, nid) ? nodes[nid].goal : undefined;
         send(res, 200, {
           node: child,
           goal: goalOf(child) ?? null,
@@ -378,8 +420,8 @@ export function server(
             name: c.bindings[p].conclusion,
             goal: goalOf(p) ?? null,
           })),
-          definitions: (n.definition_nodes ?? []).flatMap(
-            (d) => b.nodes?.[d]?.definition_ids ?? [],
+          definitions: (n.definition_nodes ?? []).flatMap((d) =>
+            Object.hasOwn(nodes, d) ? (nodes[d].definition_ids ?? []) : [],
           ),
           ...submission(c, child),
           state: n.state,
@@ -389,7 +431,7 @@ export function server(
         return;
       }
       if (!operation && method === "GET") {
-        send(res, 200, b);
+        send(res, 200, await visible(actor, b));
         return;
       }
       if (operation === "commands" && method === "POST") {
@@ -400,12 +442,23 @@ export function server(
             "unknown_member",
             400,
           );
-          if (b.request)
-            await membersCanRead(
-              input.members,
-              b.request.database,
-              b.request.branch,
-            );
+          if (h) await membersCanRead(input.members, h.database, h.branch);
+        }
+        // A command naming a branch needs to read it; attaching it needs to edit it.
+        if (b.project && "branch" in input && input.branch !== undefined)
+          await documentRole(
+            actor,
+            b.project.database,
+            input.branch,
+            input.type === "attach" ? "proof_request_create" : "read",
+          );
+        // Accepting writes the run's route into its branch.
+        if (b.project && input.type === "accept") {
+          const run = Object.hasOwn(b.runs, input.run)
+            ? b.runs[input.run]
+            : undefined;
+          if (run?.branch)
+            await documentRole(actor, b.project.database, run.branch, "write");
         }
         send(
           res,

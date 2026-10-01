@@ -208,7 +208,11 @@ export class BranchService {
   private async locked(call: Call): Promise<Reply> {
     const { method, route, query, headers, actor } = call;
     const s = await this.read();
-    this.certification = certificationLookup(call.boards ?? [], s.nodes);
+    this.certification = certificationLookup(
+      call.boards ?? [],
+      s.nodes,
+      this.db.branch,
+    );
     const node = /^\/node\/([^/]+)(\/.*)?$/.exec(route);
     const id = node ? decodeURIComponent(node[1]) : "";
     const tail = node?.[2] ?? "";

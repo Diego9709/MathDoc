@@ -7,8 +7,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { writebackContractSchema } from "./contracts.js";
 import { scan, withoutPlaceholders, preludeText } from "./lean-source.js";
-import { digestText, type NodeBinding } from "./proof.js";
-import type { Board, Run } from "./domain.js";
+import { digestText, type NodeBinding, type ProofRequest } from "./proof.js";
+import type { Run } from "./domain.js";
 import {
   moduleRoot,
   nodeRevision,
@@ -69,8 +69,12 @@ export class Conflict extends Error {
 const leanBlock = (n: Node) => n.blocks.find((b) => b.srctype === "lean");
 
 /** Already committed: the root carries this batch's operation marker. */
-export function committed(b: Board, s: Snapshot, batch: string): boolean {
-  const root = s.nodes.get(b.request!.node);
+export function committed(
+  request: ProofRequest,
+  s: Snapshot,
+  batch: string,
+): boolean {
+  const root = s.nodes.get(request.node);
   return (
     root !== undefined &&
     leanBlock(root)?.metadata.coordination_operation === batch
@@ -82,15 +86,17 @@ export function committed(b: Board, s: Snapshot, batch: string): boolean {
  * at conversion, or when writing would rename a public declaration.
  */
 export function buildBatch(input: {
-  board: Board;
+  /** The branch binding: its request (root, branch, identity) and converted nodes. */
+  request: ProofRequest;
+  nodes: Record<string, NodeBinding>;
   run: Run;
   snapshot: Snapshot;
   certificates: Map<string, CertificateRecord>;
   definitions: Map<string, DefinitionRecord>;
 }): { changes: Node[]; writeback: Writeback } {
-  const { board: b, run, snapshot: s, certificates, definitions } = input;
+  const { request, run, snapshot: s, certificates, definitions } = input;
   const batch = batchId(run);
-  const bindings = Object.values(b.nodes ?? {});
+  const bindings = Object.values(input.nodes);
   const byGoal = new Map<string, NodeBinding>();
   for (const n of bindings.sort((x, y) => x.node.localeCompare(y.node)))
     if (n.role === "theorem" && n.goal && !byGoal.has(n.goal))
@@ -218,7 +224,7 @@ export function buildBatch(input: {
     for (const id of cert.definitions ?? []) depens.add(definitionNode(id));
     n.depens = [...depens];
     const certification =
-      n.fnode === b.request!.node ? run.certification_id! : cert.id;
+      n.fnode === request.node ? run.certification_id! : cert.id;
     setLean(n, content, {
       certification_id: certification,
       certified_lean_sha256: digestText(content),
@@ -235,7 +241,7 @@ export function buildBatch(input: {
       preserve_public_declaration_name: true,
     });
   }
-  if (!changes.has(b.request!.node))
+  if (!changes.has(request.node))
     throw new Conflict(
       "root_not_in_route",
       "the certified route does not end at the bound root node",
@@ -245,11 +251,11 @@ export function buildBatch(input: {
     batch_id: batch,
     replay_key: run.id,
     review_branch: {
-      database: b.request!.database,
-      branch: b.request!.branch,
+      database: request.database,
+      branch: request.branch,
       data_version: s.version,
     },
-    source_proof_request_id: b.request!.identity,
+    source_proof_request_id: request.identity,
     operations,
     conflict_resolution: "abort_entire_batch",
     certification_visibility: "after_full_batch_commit",

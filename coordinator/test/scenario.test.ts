@@ -7,6 +7,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { client, deploy, isolated, ready, type Actor } from "./harness.js";
+import type { Board } from "../src/domain.js";
+
+const nodes = (b: Board) => b.branches!.main.nodes;
 
 const D = "def double (n : Nat) : Nat := n + n\n";
 const B = "theorem double_eq (n : Nat) : double n = n + n := sorry\n";
@@ -45,7 +48,7 @@ test(
       const r = await node("sum_doubles", R, [a1, a2, d]);
 
       // Proof environment: owners only; Project/lean is not touched.
-      const envPath = `/api/coordination/environments/${db}/main`;
+      const envPath = `/api/coordination/environments/${db}`;
       assert.equal(
         (await call("bob", "PUT", envPath, { base_key: 1 })).status,
         403,
@@ -96,14 +99,17 @@ test(
 
       // Conversion: definition registered, theorem nodes resolved, the root submitted as a sketch.
       let p = await project(id);
-      assert.ok(p.ready && p.request?.bound, JSON.stringify(p.sync_error));
-      assert.equal(p.nodes![d].state, "registered");
-      assert.equal(p.nodes![r].state, "submitted");
+      assert.ok(
+        p.ready && p.branches!.main.request.bound,
+        JSON.stringify(p.branches!.main.request.error ?? p.sync_error),
+      );
+      assert.equal(nodes(p)[d].state, "registered");
+      assert.equal(nodes(p)[r].state, "submitted");
       assert.deepEqual(
-        [p.nodes![b].state, p.nodes![a1].state, p.nodes![a2].state],
+        [nodes(p)[b].state, nodes(p)[a1].state, nodes(p)[a2].state],
         ["open", "open", "open"],
       );
-      const binding = p.nodes![r].binding as {
+      const binding = nodes(p)[r].binding as {
         component: string;
         mode: string;
         premise_placeholders: unknown[];
@@ -111,9 +117,9 @@ test(
       assert.equal(binding.component, "lean-worker-sketch");
       assert.equal(binding.premise_placeholders.length, 2);
       assert.equal(p.goals[p.root].status, "insufficient");
-      const goal = (n: string) => p.nodes![n].goal!;
+      const goal = (n: string) => nodes(p)[n].goal!;
       assert.equal(
-        p.request!.contract!.proof_request.dependencies.length,
+        p.branches!.main.request.contract!.proof_request.dependencies.length,
         3,
         "A1, A2 and the definition",
       );
@@ -131,7 +137,7 @@ test(
         (await call("carol", "GET", `/api/coordination/projects/${id}`)).status,
         404,
       );
-      const certId = p.nodes![r].certificate!;
+      const certId = nodes(p)[r].certificate!;
       assert.equal(
         (
           await call(
@@ -147,7 +153,7 @@ test(
           await call(
             "eve",
             "GET",
-            `/api/coordination/projects/${id}/nodes/${a1}/draft`,
+            `/api/coordination/projects/${id}/nodes/${a1}/draft?branch=main`,
           )
         ).status,
         404,
@@ -219,7 +225,7 @@ test(
         const draft = await ok(
           who,
           "GET",
-          `/api/coordination/projects/${id}/nodes/${n}/draft`,
+          `/api/coordination/projects/${id}/nodes/${n}/draft?branch=main`,
         );
         assert.equal(draft.component, "lean-worker-sketch");
         const source = (draft.source as string).replace(
@@ -276,7 +282,7 @@ test(
       // Decomposition 1 of B is a cycle (premise = B itself): stored, never proves B.
       const cycle =
         "theorem double_eq_again (n : Nat) : double n = n + n := sorry\ntheorem double_eq (n : Nat) : double n = n + n := double_eq_again n\n";
-      const defs = [...p.nodes![d].definition_ids!];
+      const defs = [...nodes(p)[d].definition_ids!];
       await done(id, "bob", {
         type: "submit",
         goal: goal(b),
@@ -381,7 +387,11 @@ test(
       assert.equal(p.goals[p.root].status, "derivable");
 
       // Assembly selects a route through active decompositions only.
-      await done(id, "alice", { type: "assemble", component: "lean-worker" });
+      await done(id, "alice", {
+        type: "assemble",
+        component: "lean-worker",
+        branch: "main",
+      });
       p = await project(id);
       const run = Object.values(p.runs).find((x) => x.status === "certified");
       assert.ok(run, JSON.stringify(Object.values(p.runs)));
@@ -403,7 +413,7 @@ test(
       await setLean(b, B.replace("sorry", "sorry -- edited"));
       await done(id, "alice", { type: "accept", run: run.id });
       p = await project(id);
-      const [batch] = Object.values(p.writebacks!);
+      const [batch] = Object.values(p.branches!.main.writebacks);
       assert.equal(batch.status, "aborted");
       assert.equal(batch.reason, "document_conflict");
       assert.equal(await count(), nodesBefore);
@@ -418,9 +428,9 @@ test(
       await done(id, "alice", { type: "accept", run: run.id });
       p = await project(id);
       assert.equal(
-        p.writebacks![batch.batch_id].status,
+        p.branches!.main.writebacks[batch.batch_id].status,
         "committed",
-        JSON.stringify(p.writebacks),
+        JSON.stringify(p.branches!.main.writebacks),
       );
       const after = await count();
       assert.equal(
@@ -460,7 +470,7 @@ test(
       assert.equal(rootView.formalization.lean_certification.status, "stale");
       await done(id, "alice", { type: "sync" });
       p = await project(id);
-      assert.equal(p.request!.stale, true);
+      assert.equal(p.branches!.main.request.stale, true);
       assert.equal(
         (await command(id, "alice", { type: "accept", run: run.id })).body
           .reason,
@@ -468,33 +478,48 @@ test(
       );
       await setLean(d, D);
 
-      // Unsupported shapes and same-name definitions are rejected with reasons, per node.
-      const d2 = await node(
+      // Unsupported shapes and same-name definitions are rejected with reasons, per node,
+      // on a branch whose root depends on them; the project's other branches are untouched.
+      await ok("alice", "POST", "/api/projects", {
+        action: "new_branch",
+        project: `${db}/main`,
+        name: "bad",
+      });
+      const bad = client(() => dep, db, "bad");
+      const d2 = await bad.node(
         "double (other)",
         "def double (n : Nat) : Nat := 2 * n\n",
       );
-      const inst = await node("instance", "instance : Inhabited Nat := ⟨0⟩\n");
-      const r3 = await node("uses both", "theorem r3 : double 1 = 2 := rfl\n", [
-        d,
-        d2,
-        inst,
-      ]);
-      const second = await call(
+      const inst = await bad.node(
+        "instance",
+        "instance : Inhabited Nat := ⟨0⟩\n",
+      );
+      for (const extra of [d2, inst])
+        await bad.doc(
+          "alice",
+          "POST",
+          `/node/${r}/dep/add`,
+          { dep_fnode: extra },
+          (await bad.view(r)).revision,
+        );
+      const attach = await call(
         "alice",
         "POST",
         "/api/coordination/projects",
-        { document: { database: db, branch: "main", node: r3 }, budget: 10 },
-        { "idempotency-key": `${db}-second` },
+        { document: { database: db, branch: "bad", node: r }, budget: 10 },
+        { "idempotency-key": `${db}-bad` },
       );
+      assert.equal(attach.status, 200, JSON.stringify(attach.body));
       await dep.drain();
-      const q = await project(second.body.id);
-      assert.equal(q.ready, false);
+      const q = await project(id);
+      const badNodes = q.branches!.bad.nodes;
       // The root is blocked by the first rejected dependency it has, named in the details.
-      assert.equal(q.sync_error, "root_ambiguous_binding");
-      assert.match(q.nodes![r3].details!, /instance/);
-      assert.equal(q.nodes![d].state, "registered");
-      assert.equal(q.nodes![d2].reason, "definition_name_taken");
-      assert.equal(q.nodes![inst].reason, "unsupported_declaration");
+      assert.equal(q.branches!.bad.request.error, "root_ambiguous_binding");
+      assert.match(badNodes[r].details!, /instance/);
+      assert.equal(badNodes[d].state, "registered");
+      assert.equal(badNodes[d2].reason, "definition_name_taken");
+      assert.equal(badNodes[inst].reason, "unsupported_declaration");
+      assert.ok(q.branches!.main.request.bound);
     } finally {
       await dep.close();
       await schema.close();

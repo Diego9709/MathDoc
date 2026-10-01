@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { client, deploy, isolated, ready } from "./harness.js";
+import type { Board } from "../src/domain.js";
 
 const baseKey = process.env.MDC_TEST_MATHLIB_BASE_KEY;
 
@@ -51,46 +52,58 @@ test(
         pointed,
         length,
       ]);
-      const gauss = await node("gauss_sum", GAUSS);
-      await ok("alice", "PUT", `/api/coordination/environments/${db}/main`, {
-        base_key: Number(baseKey),
-        context: { opens: ["Finset"] },
+      const environment = (database: string) =>
+        ok("alice", "PUT", `/api/coordination/environments/${database}`, {
+          base_key: Number(baseKey),
+          context: { opens: ["Finset"] },
+        });
+      await environment(db);
+      const gaussDb = `${db}g`;
+      await ok("alice", "POST", "/api/projects", {
+        action: "init",
+        name: gaussDb,
       });
-      const create = (n: string, key: string) =>
+      const gauss = await client(() => dep, gaussDb).node("gauss_sum", GAUSS);
+      await environment(gaussDb);
+      const create = (database: string, n: string, key: string) =>
         ok(
           "alice",
           "POST",
           "/api/coordination/projects",
-          { document: { database: db, branch: "main", node: n }, budget: 100 },
-          { "idempotency-key": `${db}-${key}` },
+          { document: { database, branch: "main", node: n }, budget: 100 },
+          { "idempotency-key": `${database}-${key}` },
         );
+      const nodesOf = (b: Board) => b.branches!.main.nodes;
 
       // Conversion: three definitions registered, the root submitted as a sketch.
-      const id = (await create(root, "root")).id as string;
+      const id = (await create(db, root, "root")).id as string;
       await timed("bind", () => dep.drain());
       let p = await project(id);
       assert.ok(
-        p.ready,
-        JSON.stringify({ error: p.sync_error, nodes: p.nodes }),
+        p.ready && p.branches!.main.request.bound,
+        JSON.stringify({
+          error: p.branches!.main.request.error,
+          nodes: nodesOf(p),
+        }),
       );
       for (const d of [seg, pointed, length])
         assert.equal(
-          p.nodes![d].state,
+          nodesOf(p)[d].state,
           "registered",
-          JSON.stringify(p.nodes![d]),
+          JSON.stringify(nodesOf(p)[d]),
         );
-      assert.equal(p.nodes![nonneg].state, "open");
+      assert.equal(nodesOf(p)[nonneg].state, "open");
       assert.equal(
-        p.nodes![root].state,
+        nodesOf(p)[root].state,
         "submitted",
-        JSON.stringify(p.nodes![root]),
+        JSON.stringify(nodesOf(p)[root]),
       );
 
       // An agent proves the open lemma from its draft (a leaf with the definition IDs).
       const draft = await ok(
         "alice",
         "GET",
-        `/api/coordination/projects/${id}/nodes/${nonneg}/draft`,
+        `/api/coordination/projects/${id}/nodes/${nonneg}/draft?branch=main`,
       );
       assert.equal(draft.component, "lean-worker");
       // Not vacuous: a wrong proof is rejected by the Mathlib worker.
@@ -134,7 +147,11 @@ test(
       p = await project(id);
       assert.equal(p.goals[p.root].status, "derivable");
       await timed("assemble", () =>
-        done(id, "alice", { type: "assemble", component: "lean-worker" }),
+        done(id, "alice", {
+          type: "assemble",
+          component: "lean-worker",
+          branch: "main",
+        }),
       );
       p = await project(id);
       const run = Object.values(p.runs).find((r) => r.status === "certified");
@@ -151,18 +168,22 @@ test(
         "certified",
       );
 
-      // `lemma` with a context command equal to the environment's opens: a leaf.
-      const second = (await create(gauss, "gauss")).id as string;
+      // `lemma` with a context command equal to the environment's opens: a leaf. A project
+      // proves one theorem, so the second root lives in its own database.
+      const second = (await create(gaussDb, gauss, "gauss")).id as string;
       await timed("gauss", () => dep.drain());
       const q = await project(second);
       assert.ok(
-        q.ready,
-        JSON.stringify({ error: q.sync_error, nodes: q.nodes }),
+        q.ready && q.branches!.main.request.bound,
+        JSON.stringify({
+          error: q.branches!.main.request.error,
+          nodes: nodesOf(q),
+        }),
       );
       assert.equal(
-        q.nodes![gauss].state,
+        nodesOf(q)[gauss].state,
         "submitted",
-        JSON.stringify(q.nodes![gauss]),
+        JSON.stringify(nodesOf(q)[gauss]),
       );
       assert.equal(q.goals[q.root].status, "certified");
       console.log("mathlib timings (ms)", JSON.stringify(timings));

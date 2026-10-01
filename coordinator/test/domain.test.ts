@@ -6,8 +6,9 @@ import {
   command,
   expire,
   activeGoals,
+  commandSchema,
 } from "../src/domain.js";
-import { board, fact } from "./fixtures.js";
+import { board, fact, projectBoard } from "./fixtures.js";
 test("shared premises deduplicate, cycles cannot prove themselves, pause only affects selected route", () => {
   const b = board();
   ingest(b, fact("t", "T", ["A", "B"]));
@@ -161,4 +162,77 @@ test("retry pins the original plan and creates a new attempt identity", () => {
     () => command(b, "alice", { type: "retry", run: "first" }, 0),
     /assembly_in_progress/,
   );
+});
+test("project boards: a branch's picks choose its route; picks are checked and owner-only", () => {
+  const b = projectBoard();
+  ingest(b, fact("t1", "T", ["A", "B"]));
+  ingest(b, fact("t2", "T", ["C"]));
+  for (const g of ["A", "B", "C"]) ingest(b, fact(g.toLowerCase(), g));
+  // Unpicked goals prefer fewer premises; a pick is strict.
+  assert.equal(selectRoute(b).root, "t2");
+  assert.equal(selectRoute(b, { T: "t1" }).root, "t1");
+  b.facts.t1.state = "paused";
+  assert.throws(() => selectRoute(b, { T: "t1" }), /no_active_route/);
+  b.facts.t1.state = "active";
+  const pick = (who: string, branch: string, certificate: string) =>
+    command(b, who, { type: "pick", branch, goal: "T", certificate }, 0);
+  assert.throws(() => pick("bob", "main", "t1"), /owner_required/);
+  assert.throws(() => pick("alice", "main", "a"), /certificate_goal_mismatch/);
+  assert.throws(() => pick("alice", "alt", "t1"), /branch_not_attached/);
+  pick("alice", "main", "t1");
+  const run = command(
+    b,
+    "alice",
+    { type: "assemble", component: "lean-worker", branch: "main" },
+    0,
+  ).result as { branch: string; route: { root: string } };
+  assert.deepEqual([run.branch, run.route.root], ["main", "t1"]);
+  // Assembly on a project board names its branch.
+  b.runs = {};
+  assert.throws(
+    () =>
+      command(b, "alice", { type: "assemble", component: "lean-worker" }, 0),
+    /branch_not_attached/,
+  );
+});
+test("project boards: attach adds the branch; stage 4 requests and superseded boards are read-only", () => {
+  const b = projectBoard();
+  const out = command(b, "bob", { type: "attach", branch: "alt" }, 0);
+  assert.deepEqual(out.job, { kind: "attach", payload: { branch: "alt" } });
+  assert.equal(b.branches!.alt.request.node, b.project!.root_node);
+  assert.equal(b.branches!.alt.request.bound, false);
+  assert.throws(
+    () =>
+      command(
+        b,
+        "bob",
+        { type: "submit_node", branch: "alt", node: b.project!.root_node },
+        0,
+      ),
+    /branch_not_bound/,
+  );
+  assert.throws(
+    () => commandSchema.parse({ type: "attach", branch: "__proto__" }),
+    /reserved branch name/,
+  );
+  b.project!.superseded = true;
+  assert.throws(
+    () => command(b, "alice", { type: "sync" }, 0),
+    /project_superseded/,
+  );
+  const legacy = board();
+  legacy.request = {
+    database: "d",
+    branch: "main",
+    node: "n",
+    environment_id: "e",
+    bound: true,
+    stale: false,
+  };
+  assert.throws(
+    () => command(legacy, "alice", { type: "notes", notes: "x" }, 0),
+    /proof_request_read_only/,
+  );
+  // A free-standing board (no document binding) is unaffected.
+  command(board(), "alice", { type: "notes", notes: "x" }, 0);
 });
