@@ -29,7 +29,7 @@ worker's job is picked up again. The worker keeps no state of its own.
 | `docs/latex.ts` | One lazy Python renderer process per branch (JSON lines, bounded concurrency, 10 s timeout); installs the pinned runtime when `MDC_LATEX_PYTHON` is unset. |
 | `domain.ts` | The project board and all commands as pure state transitions: goals, facts, tasks, attempts, budgets, route selection. |
 | `store.ts` | PostgreSQL: boards, idempotent command log, events, job queue. |
-| `worker.ts` | Jobs: `provision` (LeanGround project and binding), `submit_node`, `resolve`, `submit`, `import`, `sync`, `assemble`, `writeback`. |
+| `worker.ts` | Jobs: `provision` (LeanGround project, then the branches submitted so far), `attach` (convert one branch), `submit_node`, `resolve`, `submit`, `import`, `sync`, `assemble`, `writeback`. |
 | `lean-source.ts` | Conservative Lean scanner: top-level commands, context lines, declarations, node classification. |
 | `proof.ts` | Proof environments, node conversion and submission drafts, proof-request contracts. |
 | `writeback.ts` | Writeback batches. |
@@ -52,7 +52,7 @@ writes update the snapshot in place. The snapshot keeps nodes with full source
 blocks, reverse edges and depths, so memory and reload time grow with total
 source size. LaTeX rendering runs outside the lock and rechecks its inputs before
 answering. Document views attach each node's certification, computed from the
-proof requests bound to the branch.
+database's project boards (and earlier per-branch proof requests).
 
 ## Collaboration state
 

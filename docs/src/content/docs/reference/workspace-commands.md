@@ -89,10 +89,10 @@ printf 'Explanation.\n' | mdc edit -p myproject/main Lemma --type text --revisio
 
 | Command | Behavior |
 | --- | --- |
-| `mdc proof env` | The branch's proof environment (`404 environment_not_configured` if unset). |
-| `mdc proof env set` | Set it from JSON on stdin; owner or admin. |
-| `mdc proof submit REF [--budget N] [--members a,b]` | Create a proof request rooted at REF (budget default 1000). |
-| `mdc proof list [REF]` | Your proof requests on the branch, or those containing REF. |
+| `mdc proof env` | The database's proof environment (`404 environment_not_configured` if unset); `-p` names the database. |
+| `mdc proof env set` | Set it from JSON on stdin; owner or admin. A change supersedes the current project board. |
+| `mdc proof submit REF [--budget N] [--members a,b]` | Create the database's project rooted at REF (owners; budget default 1000), or attach the branch to the existing one. |
+| `mdc proof list [REF]` | The database's project boards you are a member of (current first), and earlier per-branch requests; with REF, those that converted it on this branch. |
 | `mdc proof status ID` | The whole project board. |
 | `mdc proof command ID` | Send one command (JSON on stdin) at the board's current revision. |
 

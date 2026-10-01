@@ -2,40 +2,61 @@
 title: Collaboration
 ---
 
-A collaboration project lets several people and agents complete the proof of one
-Lean node together. Everyone uses the same commands, whether through the
-browser's **Collaboration** dialog, `mdc proof command` or the
+A database's **project** lets several people and agents prove one theorem
+together. Everyone uses the same commands, whether through the browser's
+**Collaboration** dialog, `mdc proof command` or the
 [HTTP API](../../reference/agents/). LeanGround checks every proof; MathDoc keeps
-track of goals, tasks, budgets and which results are used.
+track of goals, tasks, budgets, which decompositions each branch uses, and what
+is written back.
 
-## Proof requests
+## Projects and branches
 
-A proof request is a collaboration project bound to a document node, its
-**root**. It is created with **Submit to LeanGround**, `mdc proof submit REF` or
-`POST /api/coordination/projects`, and fixes at creation:
+A project belongs to one database and proves one theorem, its **root**. Its
+**project board** holds everything the participants share: the goals, every
+certificate LeanGround accepted for them (complete proofs and decompositions),
+tasks, leases and the budget. Each branch of the database is a different way to
+the same root: a **route** through the shared goals, together with the branch's
+own document (statements, explanations, LaTeX).
 
-- the branch's **proof environment**: LeanGround base, context, options and
+A project is fixed by:
+
+- the database's **proof environment**: LeanGround base, context, options and
   minimum trust ([Proofs](../../reference/proofs/#proof-environment));
-- the fingerprints of the Lean text of the root, its direct premises and the
-  definitions they use, to detect later edits;
+- the **root node**, the theorem node chosen when the project was created;
 - the **owner** (the creator), **members** and a **budget**.
 
-The worker then converts the root and every Lean node it depends on: definition
-nodes are registered in LeanGround, theorem statements are resolved, and nodes
-with a proof are submitted. Nodes whose proof is `sorry` become open goals. The
-rules are in [Proofs with LeanGround](../../reference/proofs/#node-conversion).
-Until this first step finishes, the project is *initializing* and only `sync` is
-accepted.
+**Submit to LeanGround**, `mdc proof submit REF` or `POST
+/api/coordination/projects` on a branch does one of two things:
+
+- If the database has no project in its current environment, it creates one
+  rooted at that node. Only the database owner can do this, because it fixes
+  the theorem for every branch.
+- Otherwise it **attaches** the branch (editors can). The branch must contain
+  the root node; every branch is converted from it, whichever node the button
+  was pressed on.
+
+Attaching converts the branch: the worker reads the root and every Lean node it
+depends on on that branch, registers definition nodes in LeanGround, resolves
+theorem statements, and submits nodes that carry a proof. Nodes whose proof is
+`sorry` become open goals. The rules are in
+[Proofs with LeanGround](../../reference/proofs/#node-conversion). If the root on
+the branch resolves to a different statement than the project's root, the branch
+is refused (`root_statement_differs`) and nothing of it is submitted. Attaching
+again converts the branch anew, for example after editing it.
+
+Until the first conversion finishes, the board is *initializing* and only `sync`
+is accepted.
 
 ## Goals and GoalKey sharing
 
 A **goal** is a proposition to prove. LeanGround assigns each proposition a
 **GoalKey** computed from the statement and its environment; the same statement
-gets the same key. Goals in a project are deduplicated by GoalKey, so two nodes,
-or two decompositions, that need the same lemma share one goal, one set of tasks
-and every result for it.
+gets the same key. Goals are deduplicated by GoalKey across the whole project, so
+two nodes, two decompositions or two branches that need the same lemma share one
+goal, one set of tasks and every result for it: a lemma proved on one branch is
+proved on all of them, without importing anything.
 
-Each goal has a derived status:
+Each goal has a derived status, shared by every branch:
 
 | Status | Meaning |
 | --- | --- |
@@ -46,6 +67,9 @@ Each goal has a derived status:
 A **conditional certificate** (a *sketch*) proves a goal from premises that are
 themselves goals. A cycle of sketches without a complete proof at its leaves
 never makes a goal `derivable`.
+
+A goal's status says whether *some* combination of certificates proves it. A
+branch's **route** may still be open: see [Routes](#routes-and-picks).
 
 ## Tasks, leases and budgets
 
@@ -86,26 +110,41 @@ chosen, and either can be made active again. No state deletes a fact. Tasks can
 be claimed only for goals reachable from the root through active certificates
 (otherwise `inactive_goal`).
 
+## Routes and picks
+
+Each branch **picks** decompositions: a map from goals to the certificate its
+route uses there. Converting or resubmitting a node records the node's own
+certificate as the branch's pick for its goal, so a branch's document is its
+route. The owner can change a pick with the `pick` command (in the browser,
+**Use on this branch** and **Unpick** in Decompositions).
+
+A branch's route uses the picked certificate at every picked goal, and chooses
+automatically elsewhere (active certificates with the fewest premises). The
+Collaboration overview shows, per branch, whether its route **closes**, that is,
+reaches complete proofs. Two branches can therefore share every proved lemma and
+still differ in how they split the root.
+
 ## Assembly
 
-When the root is `derivable` or `certified`, the owner **assembles**: MathDoc
-selects a route through active certificates only, from the root down to complete
-proofs, and asks LeanGround to combine them into one source without premises,
-checked from scratch by `lean-worker`. A failed assembly marked retryable can be
-retried with the same plan; a new route is a new assembly.
+When a branch's route closes, the owner **assembles** for that branch: MathDoc
+selects the route from the branch's picks and asks LeanGround to combine the
+certificates into one source without premises, checked from scratch by
+`lean-worker`. A failed assembly marked retryable can be retried with the same
+plan; a new route is a new assembly.
 
 ## Writeback
 
-Accepting a certified assembly writes the certified sources back into the bound
-branch as one batch, in a single TerminusDB commit:
+Accepting a certified assembly writes its sources back into **the assembly's
+branch** as one batch, in a single TerminusDB commit; other branches are not
+touched.
 
-- Every existing node on the route must still have the Lean text it had when it
-  was converted; otherwise the whole batch is `aborted` with
+- Every existing node on the route must still have the Lean text it had when the
+  branch was converted; otherwise the whole batch is `aborted` with
   `document_conflict` and nothing is written. Restore or resubmit, then accept
   again.
-- Nodes whose own text was certified get only metadata. Nodes proved by a
-  participant get the certified declarations, keeping their `import` and context
-  lines; the conclusion's name must stay the same.
+- Nodes whose own text was certified get only metadata. Nodes proved elsewhere,
+  by a participant or on another branch, get the certified declarations, keeping
+  their `import` and context lines; the conclusion's name must stay the same.
 - Subgoals from decompositions without a node, and definitions without a node,
   become new nodes with edges to what they use.
 - Lean block metadata records `certification_id`, `certified_lean_sha256` and the
@@ -116,24 +155,44 @@ Replaying a batch never creates nodes twice. See
 
 ## Staleness
 
-A request becomes **stale** when a sync finds that the Lean text of the root, a
-direct premise or a definition it uses has changed. Its results stay in history,
-but `accept` is refused (`proof_request_stale`); submit the root again to start a
-new request. Independently, a node whose text or definitions changed after
-submission shows **Changed since submission** instead of Certified. A writeback's
-own changes are the new baseline and do not make the request stale.
+A branch becomes **stale** when a sync finds that the Lean text of its root, a
+direct premise or a definition it uses has changed since the branch was
+converted. Its results stay in history, but `accept` into that branch is refused
+(`proof_request_stale`); submit the root again to convert the branch anew. Other
+branches are unaffected. Independently, a node whose text or definitions changed
+shows **Changed since submission** instead of Certified. A writeback's own
+changes are the new baseline and do not make the branch stale.
+
+A node on a branch that is not attached, or that its branch never converted,
+shows the status of the same node on an attached branch when its Lean text and
+the definitions it uses are identical there.
+
+## Read-only boards
+
+Two kinds of boards stay readable but accept no commands:
+
+- **Superseded projects.** Changing the database's proof environment changes
+  every GoalKey, so the old board is marked superseded (`project_superseded`).
+  The next submission creates a new project board in the new environment.
+- **Per-branch proof requests** from MathDoc before project boards
+  (`proof_request_read_only`). Their node statuses are still shown until a
+  project board converts the same nodes.
 
 ## Permissions
 
 Collaboration never widens document access:
 
-- Creating a request needs `editor` or better on the branch.
-- Every member must be able to read the branch; adding one who cannot fails with
+- The project board is visible to its members who can read the database's
+  `main` branch; branches a member cannot read, with their assemblies, are left
+  out of what they see.
+- Creating a project needs `owner` on `main`; attaching a branch needs `editor`
+  or better on that branch; accepting writes needs `editor` on the assembly's
+  branch.
+- Every member must be able to read `main`; adding one who cannot fails with
   `member_lacks_document_access`.
-- Every project route rechecks the caller's read access; without it the project
-  reads as `404`.
-- The owner alone changes members, adds tasks, manages decompositions, assembles,
-  retries and accepts. Members claim tasks, submit, resolve and sync.
+- The owner alone changes members, adds tasks, manages decompositions and picks,
+  assembles, retries and accepts. Members claim tasks, submit, resolve, attach
+  branches they can edit and sync.
 
 Changing members revokes the open leases of removed members (charged their
 reservation).

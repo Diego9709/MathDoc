@@ -75,6 +75,6 @@ Settings stored in the branch rather than the environment:
   Lake settings from the earlier Lean integration. Preserved and exported, but
   not used: proofs are checked in the proof environment.
 
-The **proof environment** is per branch but lives in PostgreSQL, not in the
-document; it is not exported and not copied to new branches. See
+The **proof environment** is per database (shared by its branches) but lives in
+PostgreSQL, not in the document; it is not exported. See
 [Proofs with LeanGround](../proofs/#proof-environment).

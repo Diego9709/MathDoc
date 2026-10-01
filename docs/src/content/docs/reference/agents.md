@@ -3,10 +3,12 @@ title: Agent interface
 ---
 
 Agents use the same HTTP API and commands as people. An agent is an actor in
-`MDC_ACTORS` with its own token, a role on the branch (at least `viewer` to work
-on tasks, `editor` to create proof requests or edit documents) and membership in
-the proof request. This page shows the request flow; placeholders are in
-capitals and no value here is a real token.
+`MDC_ACTORS` with its own token, a role on the database's branches (at least
+`viewer` on `main` to work on tasks, `editor` on a branch to attach it or edit
+its documents) and membership in the database's project
+([Collaboration](../../concepts/collaboration/#projects-and-branches)). This page
+shows the request flow; placeholders are in capitals and no value here is a real
+token.
 
 ## Conventions
 
@@ -38,9 +40,11 @@ curl -s -H "$AUTH" "$MDC/api/coordination/projects?database=DB&branch=BRANCH"
 curl -s -H "$AUTH" "$P"
 ```
 
-The board lists `goals` (key, statement, `status`), `tasks` (`state` `ready` or
-`leased`), `attempts`, `facts`, `nodes` (the converted document nodes with their
-`goal`, `role`, `state`) and `revision`. Pick a `ready` task whose goal is not
+The first board in the list is the database's current project. It lists `goals`
+(key, statement, `status`), `tasks` (`state` `ready` or `leased`), `attempts`,
+`facts`, `branches` (per attached branch: `request`, `nodes` with each converted
+document node's `goal`, `role`, `state`, and `picks`) and `revision`. Goals and
+tasks are shared by all branches. Pick a `ready` task whose goal is not
 `certified`.
 
 ## 2. Claim
@@ -65,10 +69,11 @@ work on it. A proof you still submit is accepted if it checks.
 
 ## 3. Get the draft
 
-For a goal that belongs to a document node (see the board's `nodes`):
+For a goal that belongs to a document node of a branch (see
+`branches.BRANCH.nodes`):
 
 ```sh
-curl -s -H "$AUTH" "$P/nodes/NODE_UUID/draft"
+curl -s -H "$AUTH" "$P/nodes/NODE_UUID/draft?branch=BRANCH"
 ```
 
 The draft has `goal` (the GoalKey), `proposition`, `premises` (node, name,
@@ -146,5 +151,5 @@ the board as goals without a statement and with a `prove` task each. To prove on
 | `GET $P/facts/CERTIFICATE_ID` | A certificate of this project, with source. |
 | `GET /api/me` | `{actor, admin}` for your token. |
 
-Assembly, pausing decompositions and accepting results are owner commands; see
-[Proofs with LeanGround](../proofs/#commands).
+Assembly, pausing and picking decompositions and accepting results are owner
+commands; see [Proofs with LeanGround](../proofs/#commands).

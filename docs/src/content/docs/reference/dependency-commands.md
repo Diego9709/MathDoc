@@ -34,7 +34,7 @@ candidate is a suggestion only: the write itself rejects cycles.
 commit. For `new --parent`, `dep add` and `dep rm`, `--revision` is the revision
 of the parent or source node from `show`.
 
-Edges decide how a proof request treats Lean nodes: direct theorem dependencies
+Edges decide how a branch's conversion treats Lean nodes: direct theorem dependencies
 become premises and definition dependencies are registered
 ([Proofs with LeanGround](../proofs/#node-conversion)). Changing edges does not
 rewrite any source.

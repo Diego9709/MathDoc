@@ -61,12 +61,14 @@ mdc proof list
 mdc proof status PROJECT_ID
 ```
 
-`proof submit` creates a proof request rooted at `double_eq`. The worker registers
-`double` as a LeanGround definition, resolves the statement of `double_eq` and
-submits its proof. `proof status` returns the whole project board; once LeanGround
-has answered, the root goal's `status` becomes `certified` (or stays
-`insufficient` with a reason on the node). In the browser, the node shows
-**Certified** and the toolbar's **Collaboration** dialog shows the request.
+`proof submit` creates the database's project with `double_eq` as its root
+theorem and attaches the branch. The worker registers `double` as a LeanGround
+definition, resolves the statement of `double_eq` and submits its proof.
+`proof status` returns the whole project board; once LeanGround has answered, the
+root goal's `status` becomes `certified` (or stays `insufficient` with a reason
+on the node). In the browser, the node shows **Certified** and the toolbar's
+**Collaboration** dialog shows the project. Other branches of the database join
+the same project with `proof submit` on their copy of the root.
 
 A theorem whose proof is `sorry` becomes an open goal with a task instead; others
 can claim it, as described in [Collaboration](../../concepts/collaboration/).

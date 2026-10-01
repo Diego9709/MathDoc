@@ -31,7 +31,7 @@ PostgreSQL. Roles are `owner`, `editor` and `viewer`; administrators act as
 | Action | Roles allowed |
 | --- | --- |
 | read, history, export | admin, owner, editor, viewer |
-| write, branch create, proof request create | admin, owner, editor |
+| write, branch create, proof submission (attach a branch) | admin, owner, editor |
 | branch delete, import, manage members (grant roles, set the proof environment) | admin, owner |
 | database create, database delete | admin |
 
@@ -48,15 +48,17 @@ How a role is determined on a branch:
   MathDoc version, is visible to administrators only. An administrator adopts it
   with the `set_owner` directory action ([HTTP API](../../reference/http-api/#directory)).
 
-Collaboration never widens these permissions: every member of a proof request
-must be able to read its branch. See [Collaboration](../collaboration/#permissions).
+Collaboration never widens these permissions: every member of a database's
+project must be able to read its `main` branch, and sees only the branches they
+can read. Creating the project needs `owner`. See
+[Collaboration](../collaboration/#permissions).
 
 ## Where data lives
 
 | Data | Location |
 | --- | --- |
 | Nodes, source blocks, edges, LaTeX settings, history | TerminusDB. |
-| Workspace owners and roles, proof environments, proof requests, tasks, events, jobs | PostgreSQL. |
+| Workspace owners and roles, proof environments, project boards, tasks, events, jobs | PostgreSQL. |
 | Certificates and proof sources | LeanGround; MathDoc stores their IDs. |
 | Access tokens, database credentials | Server environment or a deployment's `secrets/`; never in exports. |
 | Browser access token | The browser's `localStorage` for this site. |

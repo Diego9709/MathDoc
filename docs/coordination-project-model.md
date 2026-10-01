@@ -1,7 +1,8 @@
 # 协作项目模型：Project、分解分支与 `mdc` 的角色
 
-状态：**提议，待评审**（2026-09-30；2026-10-01 决定 A–E，侧栏 Agent 暂缓，见「已决定」）。本文只是设计，没有改动代码。基线提交 `cc8ef1f`（分支
-`codex/mathdoc-coordination`）；LeanGround 基线 `3965273`。
+状态：**提议，待评审**（2026-09-30；2026-10-01 决定 A–E，侧栏 Agent 暂缓，见「已决定」）。基线提交 `cc8ef1f`（分支
+`codex/mathdoc-coordination`）；LeanGround 基线 `3965273`。阶段 1 已在分支 `claude/shared-project-board` 实现，待评审，
+结果与实现中定下的细节见 `docs/coordination-project-stage-1.md`。
 
 ## 目的
 

@@ -83,8 +83,9 @@ A node in `view`, `show` and write responses has `fnode`, `title`, `depth`,
 ```
 
 `lean_certification` is `null` without a Lean block, `{"status": "not_submitted"}`
-outside proof requests, and otherwise one of the
-[statuses](../proofs/#statuses), with `reason`/`details` when rejected or stale.
+when no project conversion applies to the node, and otherwise one of the
+[statuses](../proofs/#statuses), with `branch` (whose conversion is shown) and
+`reason`/`details` when rejected or stale.
 
 ### Revisions, errors and limits
 
@@ -118,20 +119,21 @@ Paths are under `/api/coordination`. Errors are `{"reason": CODE}`, plus
 
 | Method and path | Permission | Behavior |
 | --- | --- | --- |
-| `GET /environments/DB/BRANCH` | read | The proof environment, or `404 environment_not_configured`. |
-| `PUT /environments/DB/BRANCH` | owner+ | Body `{base_key, context?, options?, minimum_trust?}`. |
-| `GET /projects` | — | Proof requests you are a member of. |
-| `GET /projects?database=DB&branch=BRANCH[&node=UUID]` | read | Those bound to the branch, or containing the node. |
-| `POST /projects` | editor+ | Body `{document: {database, branch, node}, members?, budget, title?}`; header `Idempotency-Key`. `201` with the board; the same key and body again returns it with `200`. |
-| `GET /projects/ID` | member, read | The board. |
+| `GET /environments/DB` | read on `main` | The database's proof environment, or `404 environment_not_configured`. |
+| `PUT /environments/DB` | owner+ on `main` | Body `{base_key, context?, options?, minimum_trust?}`. A changed environment supersedes the current project board. |
+| `GET /projects` | — | Boards you are a member of. |
+| `GET /projects?database=DB&branch=BRANCH[&node=UUID]` | read | The database's project boards (current first, then superseded), then the branch's per-branch proof requests of earlier versions; with `node`, those that converted it on that branch. |
+| `POST /projects` | editor+ on the branch | Body `{document: {database, branch, node}, members?, budget, title?}`; header `Idempotency-Key`. Creates the database's project rooted at `node` (`201`, owner+ on `main`) or attaches the branch to it (`200`, members only); the same key and body again returns the first outcome ([Submitting a branch](../proofs/#submitting-a-branch)). |
+| `GET /projects/ID` | member, read | The board, without the branches you cannot read. |
 | `POST /projects/ID/commands` | member, read | Headers `If-Match: "REVISION"`, `Idempotency-Key`. Returns `{revision, result, job}`. |
 | `GET /projects/ID/jobs` | member, read | The latest 100 jobs. |
 | `GET /projects/ID/history` | member, read | The latest 100 events. |
 | `GET /projects/ID/facts/CERT_ID` | member, read | A certificate of this project, with source, from LeanGround. |
-| `GET /projects/ID/nodes/UUID/draft` | member, read | Submission draft for a theorem node ([Agent interface](../agents/#3-get-the-draft)). |
+| `GET /projects/ID/nodes/UUID/draft?branch=BRANCH` | member, read on the branch | Submission draft for a theorem node of an attached branch ([Agent interface](../agents/#3-get-the-draft)). |
 
-Non-members and actors without read access on the bound branch get
-`404 not_found`. Command bodies and their permissions are listed in
+For a project board, "read" means read access on the database's `main` branch;
+for a per-branch proof request, on its branch. Others get `404 not_found`.
+Command bodies and their permissions are listed in
 [Proofs with LeanGround](../proofs/#commands).
 
 Some routes serve the archived prototype's projects created from a raw
