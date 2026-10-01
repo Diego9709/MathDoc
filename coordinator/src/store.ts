@@ -186,7 +186,11 @@ export class Store {
         throw e;
       }
   }
-  /** After an environment change, the database's boards for other environments stop accepting commands. */
+  /**
+   * After an environment change, the database's boards for other environments stop
+   * accepting commands; returning to an earlier environment revives its board, whose
+   * goals mean the same again.
+   */
   async supersede(
     c: pg.PoolClient,
     database: string,
@@ -195,15 +199,17 @@ export class Store {
   ) {
     const rows = (
       await c.query(
-        `SELECT p.body FROM mdc_project p WHERE p.body->'project'->>'database'=$1
-           AND p.body->'project'->>'environment_id'<>$2 AND ${LIVE} FOR UPDATE`,
-        [database, environmentId],
+        "SELECT body FROM mdc_project WHERE body->'project'->>'database'=$1 FOR UPDATE",
+        [database],
       )
     ).rows;
     for (const r of rows) {
       const b: Board = r.body;
-      b.project!.superseded = true;
-      await this.save(c, b, actor, "superseded");
+      const superseded = b.project!.environment_id !== environmentId;
+      if (Boolean(b.project!.superseded) === superseded) continue;
+      if (superseded) b.project!.superseded = true;
+      else delete b.project!.superseded;
+      await this.save(c, b, actor, superseded ? "superseded" : "revived");
     }
   }
   private async now(c: pg.PoolClient) {

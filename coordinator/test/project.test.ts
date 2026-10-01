@@ -324,6 +324,12 @@ test(
         "the new environment gives new goal identities",
       );
       assert.equal((await certification(main, b)).project, fresh.body.id);
+      // Returning to the first environment revives its board and retires the second.
+      await ok("alice", "PUT", envPath, { base_key: 1 });
+      assert.equal((await project(id)).project!.superseded, undefined);
+      assert.equal((await project(fresh.body.id)).project!.superseded, true);
+      assert.equal((await command(id, "alice", { type: "sync" })).status, 200);
+      assert.equal((await submit("alice", "main", r, "alice-3")).body.id, id);
     } finally {
       await dep.close();
       await lean.close();

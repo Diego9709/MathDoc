@@ -245,21 +245,22 @@ export function server(
         const q = url.searchParams;
         const database = q.get("database");
         const branch = q.get("branch");
-        if (database && branch) {
+        if (database && branch)
           await documentRole(actor, database, branch, "read");
-          const boards = await store.list(actor, {
-            database,
-            branch,
-            node: q.get("node") ?? undefined,
-          });
-          const out: Board[] = [];
-          for (const b of boards) {
-            const h = home(b)!;
-            if (await canRead(actor, h.database, h.branch))
-              out.push(await visible(actor, b));
-          }
-          send(res, 200, out);
-        } else send(res, 200, await store.list(actor));
+        const boards = await store.list(
+          actor,
+          database && branch
+            ? { database, branch, node: q.get("node") ?? undefined }
+            : undefined,
+        );
+        // Only boards whose home branch the actor can read, without unreadable branches.
+        const out: Board[] = [];
+        for (const b of boards) {
+          const h = home(b);
+          if (!h || (await canRead(actor, h.database, h.branch)))
+            out.push(await visible(actor, b));
+        }
+        send(res, 200, out);
         return;
       }
       if (path === "/api/projects" && method === "POST") {

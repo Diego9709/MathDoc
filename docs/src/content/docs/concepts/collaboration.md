@@ -184,7 +184,9 @@ Collaboration never widens document access:
 
 - The project board is visible to its members who can read the database's
   `main` branch; branches a member cannot read, with their assemblies, are left
-  out of what they see.
+  out of what they see. Goals and certificates are shared by the whole project,
+  including those that came from such a branch: keep branches that some members
+  must not read in a separate database.
 - Creating a project needs `owner` on `main`; attaching a branch needs `editor`
   or better on that branch; accepting writes needs `editor` on the assembly's
   branch.

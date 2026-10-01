@@ -36,7 +36,8 @@ before environments moved to databases.
 
 Changing the environment changes every GoalKey, so it **supersedes** the
 current project board: it stays readable but accepts no commands, and the next
-submission creates a new board. Instances and classes cannot be registered;
+submission creates a new board. Setting an earlier environment again revives the
+board made in it. Instances and classes cannot be registered;
 they must already exist in the base.
 
 ## Submitting a branch
