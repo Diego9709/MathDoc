@@ -27,7 +27,7 @@ export const BASE = {
 
 type Body = Record<string, any>;
 
-export async function leangroundDouble() {
+export async function leangroundDouble(port = 0) {
   const certificates = new Map<string, Body>();
   const definitions = new Map<string, Body>();
   const events: { sequence: number; kind: string; fact_id: string }[] = [];
@@ -193,7 +193,7 @@ export async function leangroundDouble() {
     res.writeHead(out.status, { "content-type": "application/json" });
     res.end(JSON.stringify(out.body));
   });
-  server.listen(0, "127.0.0.1");
+  server.listen(port, "127.0.0.1");
   await once(server, "listening");
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,

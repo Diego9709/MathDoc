@@ -17,7 +17,8 @@ export type LeanCertification =
   | { status: "not_submitted" }
   | {
       status: "insufficient" | "derivable" | "certified" | "stale" | "rejected",
-      project: string, goal?: string, minimum_trust: string, checked_at: string | null,
+      /** `branch`: whose conversion of the node is shown (absent for stage 4 requests). */
+      project: string, branch?: string, goal?: string, minimum_trust: string, checked_at: string | null,
       truncated: boolean, reason?: string, details?: string,
     };
 

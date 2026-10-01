@@ -1,6 +1,7 @@
 <script lang="ts">
-  // "Submit to LeanGround" (plan §4.2): binds this node as the root of a proof request.
-  // The coordinator converts it and its dependencies; progress shows in Collaboration.
+  // "Submit to LeanGround": the first submission in a database creates its project board with
+  // this node as the root theorem (owners only); later ones attach this branch to it. The
+  // coordinator converts the branch from the root; progress shows in Collaboration.
   import { coordination, currentBranch } from "../lib/coordination";
   import { errMsg } from "../lib/format";
   let { fnode, submitted, onOpen }: {
@@ -21,9 +22,14 @@
       open = false;
       onOpen(board.id);
     } catch (e) {
-      error = errMsg(e) === "environment_not_configured"
+      const reason = errMsg(e);
+      error = reason === "environment_not_configured"
         ? "Set the proof environment in Project settings first."
-        : errMsg(e);
+        : reason === "not_a_project_member"
+          ? "This database already has a project. Ask its owner to add you as a member."
+          : reason === "root_not_on_branch"
+            ? "This branch does not contain the project's root theorem node."
+            : reason;
     } finally { busy = false; }
   }
 </script>
@@ -34,7 +40,7 @@
 {/if}
 {#if open}
   <div class="popover" role="dialog" aria-label="Submit to LeanGround">
-    <p>Proves this node with its dependencies. Definition nodes are registered; nodes whose proof is <code>sorry</code> become open tasks.</p>
+    <p>Attaches this branch to the database's project; with no project yet, this node becomes its root (owners only). <code>sorry</code> proofs become tasks.</p>
     <label>Members <input bind:value={members} placeholder="bob, carol" /></label>
     <label>Budget <input type="number" min="0" bind:value={budget} /></label>
     {#if error}<p class="error" role="alert">{error}</p>{/if}

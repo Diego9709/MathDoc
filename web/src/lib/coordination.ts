@@ -22,6 +22,8 @@ export interface Task { id: string; goal: string; kind: "prove" | "decompose" | 
 export interface Attempt { id: string; task: string; actor: string; epoch: number; expires: number; reserved: number; spent: number; outcome?: string }
 export interface Run {
   id: string; component: string; plan_id?: string; status: "queued" | "running" | "failed" | "certified";
+  /** Project boards: the branch whose route was assembled and which receives the writeback. */
+  branch?: string;
   certification_id?: string; failure?: string; retryable?: boolean;
   route: { root: string; steps: { certificate_id: string; providers: Record<string, string> }[] };
 }
@@ -36,16 +38,30 @@ export interface Writeback {
   reason?: string; details?: string; created: string[]; updated: string[];
   contract?: { operations: { kind: string; node_id: string; certification_id?: string; definition_id?: string }[] };
 }
+export interface ProofRequest {
+  database: string; branch: string; node: string; environment_id: string; bound: boolean;
+  stale: boolean; identity?: string; error?: string; checked_version?: string;
+}
+/** One branch attached to a project board. */
+export interface BranchState {
+  request: ProofRequest;
+  nodes: Record<string, NodeBinding>;
+  /** goal → certificate this branch's route uses. */
+  picks: Record<string, string>;
+  writebacks: Record<string, Writeback>;
+}
 export interface Board {
   id: string; title: string; owner: string; members: string[]; revision: number;
   root: string; minimum_trust: Trust; notes: string; budget: number; spent: number;
   ready: boolean; last_sync?: number; sync_error?: string;
   goals: Record<string, Goal>; facts: Record<string, Fact>; tasks: Record<string, Task>;
   attempts: Record<string, Attempt>; runs: Record<string, Run>;
-  request?: {
-    database: string; branch: string; node: string; environment_id: string; bound: boolean;
-    stale: boolean; identity?: string; error?: string; checked_version?: string;
-  };
+  /** A database's project: one root theorem, branches as routes over shared goals. */
+  project?: { database: string; environment_id: string; root_node: string; superseded?: boolean };
+  /** Branches the reader can read. */
+  branches?: Record<string, BranchState>;
+  /** Stage 4 per-branch proof requests (read-only). */
+  request?: ProofRequest;
   nodes?: Record<string, NodeBinding>;
   writebacks?: Record<string, Writeback>;
 }
@@ -56,8 +72,10 @@ export type Command =
   | { type: "finish"; attempt: string; epoch: number; spent: number; outcome: "no_progress" | "submitted" | "execution_failed" | "released" }
   | { type: "task"; goal: string; kind: "prove" | "decompose" | "formalize"; priority: number }
   | { type: "decomposition"; certificate: string; state: "active" | "paused" | "retired" }
-  | { type: "submit_node"; node: string }
-  | { type: "assemble"; component: "lean-worker" }
+  | { type: "attach"; branch: string }
+  | { type: "pick"; branch: string; goal: string; certificate: string | null }
+  | { type: "submit_node"; node: string; branch?: string }
+  | { type: "assemble"; component: "lean-worker"; branch?: string }
   | { type: "retry"; run: string }
   | { type: "accept"; run: string }
   | { type: "notes"; notes: string };
@@ -75,10 +93,10 @@ export function currentBranch(): { database: string; branch: string } | null {
 
 export const coordination = {
   me: () => fetchJson<{ actor: string; admin: boolean }>("/api/me"),
-  environment: (database: string, branch: string) =>
-    fetchJson<Environment>(`${base}/environments/${database}/${branch}`),
-  putEnvironment: (database: string, branch: string, input: EnvironmentInput) =>
-    fetchJson<Environment>(`${base}/environments/${database}/${branch}`, json("PUT", input)),
+  environment: (database: string) =>
+    fetchJson<Environment>(`${base}/environments/${database}`),
+  putEnvironment: (database: string, input: EnvironmentInput) =>
+    fetchJson<Environment>(`${base}/environments/${database}`, json("PUT", input)),
   projects: (database: string, branch: string, node?: string) =>
     fetchJson<Board[]>(`${base}/projects?${new URLSearchParams({ database, branch, ...(node ? { node } : {}) })}`),
   project: (id: string) => fetchJson<Board>(`${base}/projects/${encodeURIComponent(id)}`),
@@ -95,9 +113,46 @@ export const coordination = {
     ),
 };
 
-/** A readable name for a goal: its document node, else its statement, else a short key. */
+/** A branch's view of a board: its own binding on a project board, the request itself on a stage 4 board. */
+export function branchView(board: Board, branch: string): BranchState | null {
+  if (board.project) return board.branches?.[branch] ?? null;
+  if (!board.request) return null;
+  return { request: board.request, nodes: board.nodes ?? {}, picks: {}, writebacks: board.writebacks ?? {} };
+}
+/**
+ * Whether a branch's route reaches complete proofs: the root proved through active facts,
+ * each picked goal only through its pick (the coordinator's route selection). A goal's own
+ * status is shared by all branches; this is the branch's.
+ */
+export function routeCloses(board: Board, picks: Record<string, string>): boolean {
+  const facts = Object.values(board.facts).filter(
+    (f) => f.available && f.state === "active" && (!Object.hasOwn(picks, f.goal) || picks[f.goal] === f.id),
+  );
+  const solved = new Set<string>();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const f of facts)
+      if (!solved.has(f.goal) && f.premises.every((p) => solved.has(p))) {
+        solved.add(f.goal);
+        changed = true;
+      }
+  }
+  return solved.has(board.root);
+}
+/** Why the board takes no commands, as shown to people; null when it does. */
+export function readOnlyReason(board: Board): string | null {
+  if (board.request)
+    return "This per-branch proof request predates project boards and is read-only. Submit the root theorem to attach the branch to the database's project.";
+  if (board.project?.superseded)
+    return "The database's proof environment changed, so this project board is read-only. Submit the root theorem again to start a new one.";
+  return null;
+}
+/** A readable name for a goal: a document node proving it, else its statement, else a short key. */
 export function goalName(board: Board, goal: string): string {
-  const node = Object.values(board.nodes ?? {}).find((n) => n.goal === goal);
-  if (node) return node.title;
+  const views = [board.nodes ?? {}, ...Object.values(board.branches ?? {}).map((b) => b.nodes)];
+  for (const nodes of views) {
+    const node = Object.values(nodes).find((n) => n.goal === goal);
+    if (node) return node.title;
+  }
   return board.goals[goal]?.statement || `${goal.slice(0, 10)}...`;
 }

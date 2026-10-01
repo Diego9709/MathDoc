@@ -1,8 +1,9 @@
 <script lang="ts">
   // The four collaboration views (plan §4.2, §9): proof overview, task board,
-  // decompositions and result review. People use the same commands as agents.
+  // decompositions and result review. People use the same commands as agents. A project
+  // board is shared by the database's branches; this dialog shows the current branch's view.
   import { onDestroy, onMount } from "svelte";
-  import { coordination, currentBranch, goalName, type Board, type Command } from "../lib/coordination";
+  import { branchView, coordination, currentBranch, goalName, readOnlyReason, routeCloses, type Board, type Command } from "../lib/coordination";
   import { errMsg } from "../lib/format";
   import { modal } from "../lib/modal";
   let { project = null, onClose, onOpenNode }: {
@@ -39,7 +40,7 @@
   onDestroy(() => { alive = false; clearInterval(timer); });
 
   async function run(command: Command) {
-    if (!board || busy) return;
+    if (!board || busy || frozen) return;
     busy = true; error = null;
     try { await coordination.command(board, command); await refresh(); }
     catch (e) { error = errMsg(e); await refresh(); }
@@ -55,6 +56,12 @@
   const name = (goal: string) => (board ? goalName(board, goal) : goal);
   const failures = $derived(jobs.filter((j) => j.status === "failed").slice(0, 5));
   const statusOf = (goal: string) => board?.goals[goal]?.status ?? "insufficient";
+  const view = $derived(board && branch ? branchView(board, branch.branch) : null);
+  const frozen = $derived(board ? readOnlyReason(board) : null);
+  // Commands that act on a branch name the current one on project boards.
+  const here = $derived(board?.project && branch ? { branch: branch.branch } : {});
+  const pickedBy = (fact: string) =>
+    Object.entries(board?.branches ?? {}).filter(([, s]) => Object.values(s.picks).includes(fact)).map(([name]) => name);
 </script>
 
 <dialog class="modal-dialog collab" aria-label="Collaboration" use:modal oncancel={(e) => { e.preventDefault(); onClose(); }}>
@@ -75,12 +82,33 @@
   <div class="body">
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if !board}
-      <p class="muted">{boards.length ? "Loading..." : "No proof request on this branch yet. Open a Lean node and use “Submit to LeanGround”."}</p>
+      <p class="muted">{boards.length ? "Loading..." : "No project in this database yet. Open the root theorem's Lean node and use “Submit to LeanGround”."}</p>
     {:else if tab === "overview"}
       <section aria-label="Proof overview">
         <h3>{board.title} <span class="status" data-status={board.root ? statusOf(board.root) : "insufficient"}>{board.root ? statusOf(board.root) : "binding"}</span></h3>
-        {#if board.request?.stale}<p class="warn" role="status">The document changed after this request was bound: its results stay in history but cannot certify the new text. Submit the root node again to start a new request.</p>{/if}
+        {#if frozen}<p class="warn" role="status">{frozen}</p>{/if}
+        {#if view?.request.stale}<p class="warn" role="status">This branch's document changed after it was converted: its results stay in history but cannot certify the new text. Submit the root node again to convert the branch anew.</p>{/if}
+        {#if view?.request.error}<p class="error">This branch: {view.request.error}</p>{/if}
         {#if board.sync_error}<p class="error">Sync: {board.sync_error}</p>{/if}
+        {#if board.project}
+          {#if branch && !view && !frozen}
+            <p class="muted">This branch is not attached to the project yet.</p>
+            <button disabled={busy || !board.ready} onclick={() => void run({ type: "attach", branch: branch.branch })}>Attach this branch</button>
+          {/if}
+          <table aria-label="Branches">
+            <thead><tr><th>Branch</th><th>State</th><th>Picked decompositions</th><th title="Whether this branch's route reaches complete proofs">Route</th></tr></thead>
+            <tbody>
+              {#each Object.entries(board.branches ?? {}) as [name, s] (name)}
+                <tr class:current={name === branch?.branch}>
+                  <td>{name}</td>
+                  <td>{s.request.bound ? (s.request.stale ? "stale" : "attached") : s.request.error ?? "converting"}</td>
+                  <td>{Object.keys(s.picks).length}</td>
+                  <td>{s.request.bound && board.root ? (routeCloses(board, s.picks) ? "closed" : "open") : ""}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
         {#if !board.ready && !board.sync_error}<p class="muted">Converting nodes and submitting them to LeanGround...</p>{/if}
         <dl>
           <dt>Owner</dt><dd>{board.owner}</dd>
@@ -92,13 +120,13 @@
         <table>
           <thead><tr><th>Node</th><th>Role</th><th>State</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            {#each Object.values(board.nodes ?? {}) as n (n.node)}
+            {#each Object.values(view?.nodes ?? {}) as n (n.node)}
               <tr>
                 <td><button class="link" onclick={() => onOpenNode?.(n.node)}>{n.title}</button></td>
                 <td>{n.role}</td>
                 <td title={n.details ?? ""}>{n.state}{n.reason ? ` · ${n.reason}` : ""}</td>
                 <td>{#if n.goal}<span class="status" data-status={statusOf(n.goal)}>{statusOf(n.goal)}</span>{/if}</td>
-                <td>{#if n.role === "theorem" && n.state !== "open"}<button disabled={busy || !board.ready} onclick={() => void run({ type: "submit_node", node: n.node })}>Resubmit</button>{/if}</td>
+                <td>{#if n.role === "theorem" && !frozen}<button title="Read this node again from the branch and submit its current proof" disabled={busy || !board.ready} onclick={() => void run({ type: "submit_node", node: n.node, ...here })}>Resubmit</button>{/if}</td>
               </tr>
             {/each}
           </tbody>
@@ -107,7 +135,7 @@
           <h4>Recent failures</h4>
           <ul class="failures">{#each failures as j}<li><code>{j.kind}</code> {j.error}</li>{/each}</ul>
         {/if}
-        <button disabled={busy} onclick={() => void run({ type: "sync" })}>Sync now</button>
+        <button disabled={busy || !!frozen} onclick={() => void run({ type: "sync" })}>Sync now</button>
       </section>
     {:else if tab === "tasks"}
       <section aria-label="Task board">
@@ -127,10 +155,10 @@
                 <td>{#if a}{a.actor} · {Math.max(0, Math.round((a.expires - now()) / 1000))}s{:else}ready{/if}</td>
                 <td>
                   {#if !a && statusOf(t.goal) !== "certified"}
-                    <button disabled={busy} onclick={() => void run({ type: "claim", task: t.id, allocation, ttl })}>Claim</button>
+                    <button disabled={busy || !!frozen} onclick={() => void run({ type: "claim", task: t.id, allocation, ttl })}>Claim</button>
                   {:else if a && a.actor === me}
-                    <button disabled={busy} onclick={() => void run({ type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl })}>Extend</button>
-                    <button disabled={busy} onclick={() => void run({ type: "finish", attempt: a.id, epoch: a.epoch, spent: 0, outcome: "released" })}>Release</button>
+                    <button disabled={busy || !!frozen} onclick={() => void run({ type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl })}>Extend</button>
+                    <button disabled={busy || !!frozen} onclick={() => void run({ type: "finish", attempt: a.id, epoch: a.epoch, spent: 0, outcome: "released" })}>Release</button>
                   {/if}
                 </td>
               </tr>
@@ -141,14 +169,14 @@
           <p class="muted">Add a decomposition task for a goal:</p>
           <div class="controls">
             {#each goals.filter((g) => g.status !== "certified").slice(0, 20) as g (g.key)}
-              <button disabled={busy} onclick={() => void run({ type: "task", goal: g.key, kind: "decompose", priority: 0 })}>Decompose {name(g.key)}</button>
+              <button disabled={busy || !!frozen} onclick={() => void run({ type: "task", goal: g.key, kind: "decompose", priority: 0 })}>Decompose {name(g.key)}</button>
             {/each}
           </div>
         {/if}
       </section>
     {:else if tab === "decompositions"}
       <section aria-label="Decompositions">
-        <p class="muted">A decomposition is a conditional certificate: its goal follows from its premises. Paused ones stay as facts but are never chosen for assembly.</p>
+        <p class="muted">A decomposition is a conditional certificate: its goal follows from its premises. Paused ones stay as facts but are never chosen for assembly. Each branch's route uses the decompositions it picked; other goals are chosen automatically.</p>
         {#each goals.filter((g) => facts.some((f) => f.goal === g.key)) as g (g.key)}
           <h4>{name(g.key)} <span class="status" data-status={g.status}>{g.status}</span></h4>
           <ul class="facts">
@@ -159,9 +187,17 @@
                 · {f.trust} · {f.state}{f.available ? "" : " · no longer shared"}
                 {#if f.premises.includes(f.goal)}<span class="warn">cycle</span>{/if}
                 {#if onRoute.has(f.id)}<span class="route">on route</span>{/if}
+                {#each pickedBy(f.id) as name}<span class="route">picked by {name}</span>{/each}
+                {#if isOwner && view && board.project && branch}
+                  {#if view.picks[f.goal] === f.id}
+                    <button disabled={busy || !!frozen} onclick={() => void run({ type: "pick", branch: branch.branch, goal: f.goal, certificate: null })} title="Let assembly choose this goal's decomposition">Unpick</button>
+                  {:else}
+                    <button disabled={busy || !!frozen} onclick={() => void run({ type: "pick", branch: branch.branch, goal: f.goal, certificate: f.id })} title="This branch's route uses this decomposition">Use on this branch</button>
+                  {/if}
+                {/if}
                 {#if isOwner}
                   {#each ["active", "paused", "retired"] as const as state}
-                    {#if state !== f.state}<button disabled={busy} onclick={() => void run({ type: "decomposition", certificate: f.id, state })}>{state === "active" ? "Activate" : state === "paused" ? "Pause" : "Retire"}</button>{/if}
+                    {#if state !== f.state}<button disabled={busy || !!frozen} onclick={() => void run({ type: "decomposition", certificate: f.id, state })}>{state === "active" ? "Activate" : state === "paused" ? "Pause" : "Retire"}</button>{/if}
                   {/each}
                 {/if}
               </li>
@@ -172,25 +208,27 @@
     {:else}
       <section aria-label="Review">
         {#if isOwner}
-          <button disabled={busy || !board.root || statusOf(board.root) === "insufficient"} onclick={() => void run({ type: "assemble", component: "lean-worker" })}>Assemble a route</button>
+          {#if board.project}<p class="muted">Assembly follows the route picked by branch {branch?.branch}; accepting writes into the run's branch.</p>{/if}
+          <button disabled={busy || !!frozen || !board.root || (board.project ? !view?.request.bound || !routeCloses(board, view.picks) : statusOf(board.root) === "insufficient")} onclick={() => void run({ type: "assemble", component: "lean-worker", ...here })}>Assemble a route</button>
         {/if}
         {#each Object.values(board.runs) as r (r.id)}
+          {@const target = r.branch ? board.branches?.[r.branch] : view}
           <article class="run">
-            <h4>Assembly {r.id.slice(0, 8)} · <span class="status" data-status={r.status === "certified" ? "certified" : "insufficient"}>{r.status}</span></h4>
+            <h4>Assembly {r.id.slice(0, 8)}{r.branch ? ` · ${r.branch}` : ""} · <span class="status" data-status={r.status === "certified" ? "certified" : "insufficient"}>{r.status}</span></h4>
             {#if r.failure}<p class="error">{r.failure}{r.retryable ? " (retryable)" : ""}</p>{/if}
             <ol>{#each r.route.steps as s}<li>{name(board.facts[s.certificate_id]?.goal ?? "")} <code>{s.certificate_id.slice(0, 10)}</code></li>{/each}</ol>
-            {#if isOwner && r.status === "failed" && r.retryable}<button disabled={busy} onclick={() => void run({ type: "retry", run: r.id })}>Retry same plan</button>{/if}
+            {#if isOwner && r.status === "failed" && r.retryable}<button disabled={busy || !!frozen} onclick={() => void run({ type: "retry", run: r.id })}>Retry same plan</button>{/if}
             {#if isOwner && r.status === "certified"}
-              <button disabled={busy || board.request?.stale} onclick={() => void run({ type: "accept", run: r.id })} title="Write the certified sources back to the document in one batch">Accept and write back</button>
+              <button disabled={busy || !!frozen || !!target?.request.stale} onclick={() => void run({ type: "accept", run: r.id })} title={`Write the certified sources back to ${r.branch ? `branch ${r.branch}` : "the document"} in one batch`}>Accept and write back</button>
             {/if}
           </article>
         {/each}
-        {#each Object.values(board.writebacks ?? {}) as w (w.batch_id)}
+        {#each Object.values(view?.writebacks ?? {}) as w (w.batch_id)}
           <article class="batch" data-status={w.status}>
             <h4>Writeback {w.batch_id.slice(3, 11)} · {w.status}</h4>
             {#if w.status === "aborted"}<p class="error">{w.reason}: {w.details}. Nothing was written.</p>{/if}
             {#if w.contract}
-              <ul>{#each w.contract.operations as o}<li>{o.kind.replaceAll("_", " ")} <button class="link" onclick={() => onOpenNode?.(o.node_id)}>{board.nodes?.[o.node_id]?.title ?? o.node_id.slice(0, 8)}</button></li>{/each}</ul>
+              <ul>{#each w.contract.operations as o}<li>{o.kind.replaceAll("_", " ")} <button class="link" onclick={() => onOpenNode?.(o.node_id)}>{view?.nodes[o.node_id]?.title ?? o.node_id.slice(0, 8)}</button></li>{/each}</ul>
             {/if}
           </article>
         {/each}
@@ -219,6 +257,7 @@
   .warn { color:var(--mdc-warning); }
   .error { color:var(--mdc-error); }
   .route { color:var(--mdc-accent); margin-left:.3rem; }
+  tr.current td:first-child { font-weight:600; color:var(--mdc-accent); }
   .facts li.paused { opacity:.6; }
   .facts li.unavailable { text-decoration:line-through; }
   .controls { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }

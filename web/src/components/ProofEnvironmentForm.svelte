@@ -1,7 +1,7 @@
 <script lang="ts">
-  // The LeanGround proof environment of this branch (plan §5, contract proof-environment.v1).
-  // It is stored by the coordinator, never inside the legacy Lake project. Changing it
-  // applies to new proof requests only; existing requests keep their environment.
+  // The LeanGround proof environment of this database (contract proof-environment.v1,
+  // docs/coordination-project-model.md). It is stored by the coordinator, never inside the
+  // legacy Lake project. Changing it retires the current project board, which stays readable.
   import { onDestroy, onMount } from "svelte";
   import { coordination, currentBranch, type Environment, type Trust } from "../lib/coordination";
   import { errMsg } from "../lib/format";
@@ -35,7 +35,7 @@
   onMount(async () => {
     try {
       if (!branch) throw new Error("open a branch first");
-      load(await coordination.environment(branch.database, branch.branch));
+      load(await coordination.environment(branch.database));
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) load(null);
       else if (alive) error = errMsg(e);
@@ -52,7 +52,7 @@
         const lines = context[key].split("\n").map((l) => l.trim()).filter(Boolean);
         if (lines.length) ctx[key] = lines;
       }
-      const saved = await coordination.putEnvironment(branch.database, branch.branch, {
+      const saved = await coordination.putEnvironment(branch.database, {
         base_key: Number(baseKey), context: ctx, options: parsed, minimum_trust: trust,
       });
       if (!alive) return;
@@ -63,7 +63,7 @@
   }
 </script>
 <div class="body">
-  <p>Lean blocks are checked by LeanGround in this environment. Changing it affects new proof requests only.</p>
+  <p>Lean blocks of every branch are checked by LeanGround in this environment. Changing it starts a new project board; the current one stays readable.</p>
   <label>Base key<input inputmode="numeric" bind:value={baseKey} disabled={busy} placeholder="1" /></label>
   {#if current}
     <span class="meta">{current.base.root_module} · Lean {current.base.lean_version} · environment {current.environment_id.slice(0, 12)}</span>
