@@ -1,14 +1,20 @@
 #!/usr/bin/env node
-// `mdc`: a thin command-line client of the MathDoc HTTP API (docs/mathdoc.md §2.5; migration stage 5 replaced the
-// Rust CLI). Every command is one or two HTTP requests with the caller's access token;
-// output is the JSON response. Node references accept an exact title or a UUID.
+// `mdc`: a command-line client of the MathDoc HTTP API (docs/mathdoc.md §2.5; migration stage 5
+// replaced the Rust CLI). Document and board commands are one or two HTTP requests with the
+// caller's access token and print the JSON response. The proof verbs (pull, prove, split,
+// done; src/mdc/) work on goal files and keep replay records in `.mdc/`. Node references
+// accept an exact title or a UUID.
 //
-//   MDC_URL      server origin (default http://127.0.0.1:17843)
+//   MDC_URL      server origin (default http://127.0.0.1:17843; a workspace's own server)
 //   MDC_TOKEN    access token (required)
 //   MDC_PROJECT  default DATABASE/BRANCH for branch commands (or -p DATABASE/BRANCH)
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client, MdcError } from "./mdc/client.js";
+import { find as findWorkspace } from "./mdc/workspace.js";
+import * as verbs from "./mdc/verbs.js";
 
 const USAGE = `usage: mdc [-p DATABASE/BRANCH] <command>
 
@@ -24,6 +30,11 @@ nodes:      show REF | new -t TITLE [--parent REF] | del REF | rename REF TITLE
 proof:      proof env [set]             (the database's environment; set reads JSON from stdin)
             proof submit REF [--budget N] [--members a,b]   (create the project or attach the branch)
             proof list [REF] | proof status ID | proof command ID   (command JSON from stdin)
+work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]
+            prove FILE [--wait] [--dry-run] [--again]
+            split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]
+            done [FILE] [--spent N] [--outcome O]
+            (GOAL: a GoalKey, a unique prefix of 8+ hex digits, or a node title or UUID)
 Write commands take --revision REV to require the revision printed by show.`;
 
 class UsageError extends Error {}
@@ -36,8 +47,18 @@ function parse(argv: string[]) {
     "-t": "--target",
     "-n": "--max",
     "-d": "--depth",
+    "-m": "--message",
+    "-o": "--output",
   };
-  const boolean = new Set(["--delete", "--help", "-h"]);
+  const boolean = new Set([
+    "--delete",
+    "--help",
+    "-h",
+    "--wait",
+    "--dry-run",
+    "--again",
+    "--no-claim",
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith("-") && !/^-\d/.test(arg)) {
@@ -68,54 +89,49 @@ async function stdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** Test seams: the process's network, directory and clock. */
+export interface Io {
+  fetch?: typeof fetch;
+  cwd?: string;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const WORK = new Set(["pull", "prove", "split", "done"]);
+
 export async function main(
   argv: string[],
   env: NodeJS.ProcessEnv = process.env,
   input: () => Promise<string> = stdin,
+  io: Io = {},
 ): Promise<unknown> {
   const { positional, flags } = parse(argv);
   const [command, ...args] = positional;
   if (!command || flags["--help"] || flags["-h"]) throw new UsageError(USAGE);
-  const origin = (env.MDC_URL ?? "http://127.0.0.1:17843").replace(/\/$/, "");
-  const token = env.MDC_TOKEN;
-  if (!token) throw new UsageError("set MDC_TOKEN to your access token");
+  const cwd = io.cwd ?? process.cwd();
   const flag = (name: string) => flags[name]?.[0];
+  const dryRun = WORK.has(command) && flags["--dry-run"] !== undefined;
+  // A workspace remembers its server, so verbs run inside one need no MDC_URL.
+  const workspace = WORK.has(command)
+    ? await findWorkspace(
+        command === "pull" || !args[0] ? cwd : dirname(resolve(cwd, args[0])),
+      )
+    : undefined;
+  const origin = (
+    env.MDC_URL ??
+    workspace?.server ??
+    "http://127.0.0.1:17843"
+  ).replace(/\/$/, "");
+  const token = env.MDC_TOKEN;
+  if (!token && !dryRun)
+    throw new UsageError("set MDC_TOKEN to your access token");
   const project = flag("--project") ?? env.MDC_PROJECT;
   const need = (value: string | undefined, what: string) => {
     if (!value) throw new UsageError(`missing ${what}\n\n${USAGE}`);
     return value;
   };
-
-  async function request(
-    method: string,
-    path: string,
-    body?: unknown,
-    headers: Record<string, string> = {},
-  ): Promise<any> {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-        ...headers,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }).catch(() => {
-      throw new Error(`cannot reach MathDoc at ${origin} (MDC_URL)`);
-    });
-    const text = await response.text();
-    let value: any = null;
-    try {
-      value = text ? JSON.parse(text) : null;
-    } catch {
-      value = { error: text };
-    }
-    if (!response.ok)
-      throw new Error(
-        `HTTP ${response.status}: ${value?.error ?? value?.reason ?? "request failed"}`,
-      );
-    return value;
-  }
+  const client = new Client(origin, token ?? "", io.fetch);
+  const request = client.request.bind(client);
   const branch = () => {
     const p = need(project, "-p DATABASE/BRANCH (or MDC_PROJECT)");
     if (!/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(p))
@@ -135,6 +151,28 @@ export async function main(
   });
   const directory = (body: unknown) => request("POST", "/api/projects", body);
   const coordination = (path: string) => `/api/coordination${path}`;
+
+  if (WORK.has(command)) {
+    const ctx: verbs.VerbContext = {
+      client,
+      cwd,
+      project,
+      flag,
+      has: (name) => flags[name] !== undefined,
+      now: io.now ?? Date.now,
+      sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    };
+    try {
+      if (command === "pull") return await verbs.pull(ctx, args[0]);
+      if (command === "prove") return await verbs.submit(ctx, args[0], "prove");
+      if (command === "split") return await verbs.submit(ctx, args[0], "split");
+      return await verbs.done(ctx, args[0]);
+    } catch (e) {
+      if (e instanceof MdcError && e.reason === "usage")
+        throw new UsageError(`${e.details}\n\n${USAGE}`);
+      throw e;
+    }
+  }
 
   switch (command) {
     case "status":
@@ -361,7 +399,12 @@ if (invoked)
       process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     },
     (e: unknown) => {
-      process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+      // Usage errors print the usage text; failures print {reason, status?, details?}.
+      process.stderr.write(
+        e instanceof UsageError
+          ? `${e.message}\n`
+          : `${JSON.stringify(e instanceof MdcError ? e : { reason: "error", details: e instanceof Error ? e.message : String(e) })}\n`,
+      );
       process.exitCode = e instanceof UsageError ? 2 : 1;
     },
   );
