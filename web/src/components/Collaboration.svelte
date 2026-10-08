@@ -19,6 +19,8 @@
   let principal = $state<string>(""), scopes = $state<string[] | null>(null);
   let error = $state<string | null>(null), busy = $state(false);
   let jobs = $state<Awaited<ReturnType<typeof coordination.jobs>>>([]);
+  // §2.7.5: the task board follows the server's recommendation order.
+  let ranking = $state<Map<string, number>>(new Map());
   let allocation = $state(100), ttl = $state(300);
   let comments = $state<Record<string, string>>({});
   let noteFor = $state<string | null>(null), noteText = $state("");
@@ -33,6 +35,8 @@
       if (selected) {
         board = await coordination.project(selected);
         jobs = await coordination.jobs(selected);
+        if (board.project && !board.project.superseded)
+          ranking = new Map((await coordination.next(selected)).candidates.map((c, i) => [c.task, i + 1]));
       }
       error = null;
     } catch (e) { if (alive) error = errMsg(e); }
@@ -52,9 +56,13 @@
   async function run(command: Command) {
     if (!board || busy || frozen) return;
     busy = true; error = null;
-    try { await coordination.command(board, command); await refresh(); }
-    catch (e) { error = errMsg(e); await refresh(); }
-    finally { busy = false; }
+    let failed: string | null = null;
+    try { await coordination.command(board, command); }
+    catch (e) { failed = errMsg(e); }
+    // Refreshing clears the last load error; a refused command must stay visible.
+    await refresh();
+    if (failed) error = failed;
+    busy = false;
   }
   const isOwner = $derived(board !== null && board.owner === principal && (scopes === null || scopes.includes("maintain")));
   const goals = $derived(board ? Object.values(board.goals) : []);
@@ -176,13 +184,14 @@
           <label>Lease (s) <input type="number" min="30" max="3600" bind:value={ttl} /></label>
         </div>
         <table>
-          <thead><tr><th>Goal</th><th>Kind</th><th>Status</th><th>Lease</th><th>Notes</th><th></th></tr></thead>
+          <thead><tr><th title="Recommended order: needed by the routes closest to closing, fewest failures first">Next</th><th>Goal</th><th>Kind</th><th>Status</th><th>Lease</th><th>Notes</th><th></th></tr></thead>
           <tbody>
-            {#each Object.values(board.tasks).filter((t) => t.state !== "cancelled") as t (t.id)}
+            {#each Object.values(board.tasks).filter((t) => t.state !== "cancelled").sort((x, y) => (ranking.get(x.id) ?? Infinity) - (ranking.get(y.id) ?? Infinity)) as t (t.id)}
               {@const a = t.attempt ? board.attempts[t.attempt] : undefined}
               {@const notes = board.goals[t.goal]?.notes ?? []}
               <tr>
-                <td>{name(t.goal)}</td>
+                <td>{ranking.has(t.id) ? `#${ranking.get(t.id)}` : ""}</td>
+                <td>{name(t.goal)}{#if board.negations?.[t.goal]} <span class="muted">refutes {name(board.negations[t.goal])}</span>{/if}</td>
                 <td>{t.kind}</td>
                 <td>
                   <span class="status" data-status={statusOf(t.goal)}>{statusOf(t.goal)}</span>
@@ -268,13 +277,14 @@
           </section>
         {/if}
         {#each goals.filter((g) => facts.some((f) => f.goal === g.key)) as g (g.key)}
-          <h4>{name(g.key)} <span class="status" data-status={g.status}>{g.status}</span></h4>
+          <h4>{name(g.key)} <span class="status" data-status={g.status}>{g.status}</span>{#if g.refuted}<span class="status refuted" title={`Its negation is proved by ${g.refuted.certificate.slice(0, 10)}`}>refuted</span>{/if}</h4>
           <ul class="facts">
             {#each facts.filter((f) => f.goal === g.key) as f (f.id)}
               <li class:paused={f.state !== "active"} class:unavailable={!f.available}>
                 <code title={f.id}>{f.id.slice(0, 10)}</code>
                 {#if f.premises.length}⇐ {f.premises.map(name).join(", ")}{:else}complete proof{/if}
                 · {f.trust} · {f.state}{f.available ? "" : " · no longer shared"}
+                {#if f.refuted_by}<span class="warn">· its premise {name(f.refuted_by)} is false</span>{/if}
                 {#if f.premises.includes(f.goal)}<span class="warn" title={f.retired_reason === "premise_is_goal" ? "A premise is the goal itself, so it was retired on arrival" : ""}>cycle</span>{/if}
                 {#if f.description}<span class="description">· {f.description}</span>{/if}
                 {#if f.submitter}<span class="muted">· by {f.submitter}</span>{/if}
@@ -288,7 +298,7 @@
                     <button disabled={busy || !!frozen} onclick={() => void run({ type: "pick", branch: branch.branch, goal: f.goal, certificate: f.id })} title="This branch's route uses this decomposition">Use on this branch</button>
                   {/if}
                 {/if}
-                {#if isOwner}
+                {#if isOwner && f.state !== "refuted"}
                   {#each ["active", "paused", "retired"] as const as state}
                     {#if state !== f.state}<button disabled={busy || !!frozen} onclick={() => void run({ type: "decomposition", certificate: f.id, state })}>{state === "active" ? "Activate" : state === "paused" ? "Pause" : "Retire"}</button>{/if}
                   {/each}
@@ -352,6 +362,7 @@
   .route { color:var(--mdc-accent); margin-left:.3rem; }
   tr.current td:first-child { font-weight:600; color:var(--mdc-accent); }
   .facts li.paused { opacity:.6; }
+  .status.refuted { color:var(--mdc-error); border-color:var(--mdc-error); margin-left:.3rem; }
   .pending { border:1px solid var(--mdc-accent); border-radius:var(--mdc-radius-sm); padding:.5rem .75rem; margin:.6rem 0; }
   .pending article + article { border-top:1px solid var(--mdc-border); margin-top:.5rem; padding-top:.5rem; }
   .pending ul { margin:.2rem 0 .3rem; }

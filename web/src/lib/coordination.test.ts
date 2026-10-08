@@ -37,6 +37,11 @@ describe('project boards in the browser', () => {
     expect([...activeGoals(b)].sort()).toEqual(['A', 'T']);
     b.facts.p.state = 'active';
     expect([...activeGoals(b)].sort()).toEqual(['A', 'B', 'T']);
+    // A registered negation of an active goal can be worked on, until its goal is refuted.
+    b.negations = { N: 'B' };
+    expect(activeGoals(b).has('N')).toBe(true);
+    b.goals.B = { key: 'B', statement: 'b', status: 'insufficient', refuted: { certificate: 'n' } };
+    expect(activeGoals(b).has('N')).toBe(false);
   });
   it('names the branches whose route can need a goal, following picks', () => {
     const request = { database: 'd', branch: 'main', node: 'n', environment_id: 'e', bound: true, stale: false };

@@ -23,14 +23,18 @@ export interface Goal {
   proposition?: string; declaration?: { name: string; binders: string; type: string };
   /** Attempt notes, oldest first (§2.7.3). */
   notes?: Note[];
+  /** Set once a complete proof of the goal's negation exists (§2.7.5). */
+  refuted?: { certificate: string; at?: number };
 }
 /** `proposed` decompositions wait for the owner's review and schedule nothing (§2.7.3). */
-export type FactState = "proposed" | "active" | "paused" | "retired";
+export type FactState = "proposed" | "active" | "paused" | "retired" | "refuted";
 export interface Fact {
   id: string; goal: string; premises: string[]; trust: Trust; state: FactState; available: boolean;
   description?: string; submitter?: string; submitted_at?: number;
   review?: { actor: string; at: number; state: Exclude<FactState, "proposed">; comment?: string };
   retired_reason?: "premise_is_goal";
+  /** For a refuted certificate: its premise proved false. */
+  refuted_by?: string;
 }
 export interface Task { id: string; goal: string; kind: "prove" | "decompose" | "formalize"; priority: number; state: "ready" | "leased" | "cancelled"; epoch: number; attempt?: string }
 export interface Attempt { id: string; task: string; actor: string; epoch: number; expires: number; reserved: number; spent: number; outcome?: string }
@@ -74,6 +78,8 @@ export interface Board {
   project?: { database: string; environment_id: string; root_node: string; superseded?: boolean };
   /** Project boards: whether new sketches wait for review (absent: they do). */
   review?: "required" | "none";
+  /** Negation goal → the goal it refutes once proved (§2.7.5). */
+  negations?: Record<string, string>;
   /** Branches the reader can read. */
   branches?: Record<string, BranchState>;
   /** Stage 4 per-branch proof requests (read-only). */
@@ -89,6 +95,7 @@ export type Command =
   | { type: "task"; goal: string; kind: "prove" | "decompose" | "formalize"; priority: number }
   | { type: "decomposition"; certificate: string; state: "active" | "paused" | "retired"; comment?: string }
   | { type: "note"; goal: string; text: string }
+  | { type: "negate"; goal: string }
   | { type: "policy"; review: "required" | "none" }
   | { type: "attach"; branch: string }
   | { type: "pick"; branch: string; goal: string; certificate: string | null }
@@ -126,6 +133,11 @@ export const coordination = {
     fetchJson<{ revision: number; result: unknown; job?: string }>(
       `${base}/projects/${encodeURIComponent(board.id)}/commands`,
       json("POST", command, { "if-match": `"${board.revision}"`, "idempotency-key": crypto.randomUUID() }),
+    ),
+  /** The goals most worth working on, best first (§2.7.5). */
+  next: (id: string, limit = 200) =>
+    fetchJson<{ revision: number; candidates: { goal: string; task: string; score: number; branches: string[]; failures: number }[] }>(
+      `${base}/projects/${encodeURIComponent(id)}/next?limit=${limit}`,
     ),
   jobs: (id: string) =>
     fetchJson<{ id: string; actor: string; kind: string; status: string; tries: number; error: string | null; created_at: string }[]>(
@@ -188,6 +200,9 @@ export function activeGoals(board: Board): Set<string> {
     for (const f of Object.values(board.facts))
       if (f.available && f.state === "active" && active.has(f.goal))
         for (const p of f.premises) active.add(p);
+    // A goal's registered negation is worth working on too.
+    for (const [negation, target] of Object.entries(board.negations ?? {}))
+      if (active.has(target) && !board.goals[target]?.refuted) active.add(negation);
   }
   return active;
 }
