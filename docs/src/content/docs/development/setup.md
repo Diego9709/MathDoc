@@ -19,8 +19,7 @@ Set `MDC_LATEX_PYTHON` to a Python with the renderer's packages.
 
 ```sh
 npm ci
-npm run check                     # coordinator and app type checks
-npm run check -w mdc-web          # svelte-check
+npm run check                     # coordinator tsc and web svelte-check
 npm test -w mdc-web               # frontend unit tests
 npm run build -w @mathdoc/coordinator && npm run build -w mdc-web
 

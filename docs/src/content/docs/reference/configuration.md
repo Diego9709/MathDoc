@@ -33,7 +33,6 @@ error, as is an empty or unreadable file; values are trimmed.
 | `MDC_RENDERER_DIR` | `renderer/` of the checkout | LaTeX renderer directory. |
 | `MDC_LATEX_PYTHON` | unset | Python with the renderer's packages; unset, the API installs a pinned virtual environment on first use. |
 | `MDC_CACHE_DIR` | `$XDG_CACHE_HOME/mathdoc` or `~/.cache/mathdoc` | Absolute path; holds the installed LaTeX runtime. |
-| `MDC_APP_DIR` | unset | Serves the archived collaboration prototype (`app/dist`) at `/` instead of the editor. Not for normal use. |
 
 The development `compose.yaml` uses `MDC_TERMINUS_PASSWORD` and `MDC_POSTGRES_PASSWORD`
 (and optional `MDC_TERMINUS_PORT`, `MDC_POSTGRES_PORT`) to initialize its database

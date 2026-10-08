@@ -224,7 +224,6 @@ test(
       leanToken: "remote-secret",
       leanActor: "coordinator",
       terminusUser: "admin",
-      appDir: "app/dist",
     };
     const api = server(cfg, env.store, lean, docs);
     const apiUrl = await listen(api);

@@ -5,7 +5,6 @@ FROM node:26-bookworm-slim AS build
 WORKDIR /build
 COPY package.json package-lock.json ./
 COPY coordinator/package.json coordinator/
-COPY app/package.json app/
 COPY web/package.json web/
 RUN npm ci
 COPY coordinator coordinator
@@ -17,7 +16,6 @@ FROM node:26-bookworm-slim AS runtime-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY coordinator/package.json coordinator/
-COPY app/package.json app/
 COPY web/package.json web/
 RUN npm ci --omit=dev -w @mathdoc/coordinator --include-workspace-root=false
 

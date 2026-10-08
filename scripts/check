@@ -42,7 +42,6 @@ def fast(python):
         raise RuntimeError(f"Generated files or deployment state tracked in Git:\n{tracked}")
     run("npm", "ci")
     run("npm", "run", "check")
-    run("npm", "run", "check", "-w", "mdc-web")
     run("npm", "test", "-w", "mdc-web")
     run("npm", "run", "build", "-w", "@mathdoc/coordinator")
     run("npm", "run", "build", "-w", "mdc-web")

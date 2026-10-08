@@ -1,7 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { resolve, extname } from "node:path";
 import { z } from "zod";
 import { Store } from "./store.js";
 import { Config } from "./config.js";
@@ -174,51 +172,13 @@ export function server(
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (documents && !cfg.appDir && (await documents.handle(req, res, url)))
-        return;
-      if (
-        documents &&
-        cfg.appDir &&
-        (url.pathname.startsWith("/p/") || url.pathname === "/api/status")
-      )
-        if (await documents.handle(req, res, url)) return;
+      if (documents && (await documents.handle(req, res, url))) return;
       const coordination = url.pathname.startsWith("/api/coordination/");
       const path = coordination
         ? `/api${url.pathname.slice("/api/coordination".length)}`
         : url.pathname;
       const method = req.method;
-      if (!path.startsWith("/api/")) {
-        requireThat(cfg.appDir, "not_found", 404);
-        requireThat(method === "GET", "method_not_allowed", 405);
-        const asset =
-          path === "/" ? "index.html" : decodeURIComponent(path).slice(1);
-        const root = resolve(cfg.appDir!);
-        const file = resolve(root, asset);
-        requireThat(file.startsWith(`${root}/`), "not_found", 404);
-        let data: Buffer;
-        try {
-          data = await readFile(file);
-        } catch {
-          throw new Fault("not_found", 404);
-        }
-        const types: Record<string, string> = {
-          ".html": "text/html; charset=utf-8",
-          ".js": "text/javascript",
-          ".css": "text/css",
-          ".woff2": "font/woff2",
-          ".svg": "image/svg+xml",
-        };
-        res.writeHead(200, {
-          "content-type": types[extname(file)] ?? "application/octet-stream",
-          "x-content-type-options": "nosniff",
-          "cache-control":
-            asset === "index.html" ? "no-store" : "public,max-age=3600",
-          "content-security-policy":
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'",
-        });
-        res.end(data);
-        return;
-      }
+      requireThat(path.startsWith("/api/"), "not_found", 404);
       const who = await authenticate(req);
       const actor = who.actor;
       // Administrator rights are the person's; a delegated token also needs `maintain`.
