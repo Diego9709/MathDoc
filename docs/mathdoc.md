@@ -3,8 +3,7 @@
 状态：2026-10-08 整理。本文取代 `docs/` 下原有的 10 份规划、阶段报告与规范文档（见附录 A），是 MathDoc 唯一的
 内部规划文档。面向用户的英文参考在文档站 `docs/src/content/docs/`，不在本文范围内。
 
-对应代码：分支 `claude/shared-project-board`（基于 `codex/mathdoc-coordination` 的 `cb850d2`），LeanGround `main`
-的 `3965273`。
+对应代码：主要工作分支 `codex/mathdoc-coordination`；LeanGround `main` 的 `3965273`。
 
 ## 1. 本文与阅读方法
 
@@ -363,11 +362,12 @@ Project（= 一个 TerminusDB 数据库）
 
 | 分支 | 位置 | 说明 |
 |---|---|---|
-| `claude/shared-project-board` | `.claude/worktrees/shared-project-board` | 项目阶段 1 与本文；未推送，未合并 |
-| `codex/mathdoc-coordination` | 主工作区 | `cb850d2`，比远端多 2 个文档提交；工作区里另有他人尚未提交的改动：删除 `app/`、`docs/coordination.md` 和部分 perf 报告，修改 `coordinator/src/http.ts`、`config.ts` 等 |
+| `codex/mathdoc-coordination` | 主工作区 | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1 和本文；尚未推送到远端 `colab` |
+| `claude/shared-project-board` | `.claude/worktrees/shared-project-board` | 项目阶段 1 的开发分支，已以快进方式全部并入上一行，可以删除 |
 
-合并顺序建议：他人改动提交后，把 `claude/shared-project-board` 合入 `codex/mathdoc-coordination`。预计
-`coordinator/src/http.ts` 会有冲突。
+主工作区里另有一组尚未提交的改动（不是本文作者所做）：删除归档原型 `app/` 及其开关 `MDC_APP_DIR`、删除部分 perf 报告，
+并相应修改 `coordinator/src/http.ts`、`config.ts`、`package.json` 等。合并时这组改动原样保留在工作区；在它之上，
+协调层测试 34 项通过、3 项跳过（需要真实 LeanGround），前端测试 29 项通过 [实测，2026-10-08]。
 
 ### 3.5 已知问题
 
