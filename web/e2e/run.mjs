@@ -1142,6 +1142,53 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
       await collab.getByRole('tab', {name: 'Decompositions'}).click();
       await collab.getByRole('region', {name: 'Decompositions'}).getByText(/⇐ triple_eq/).waitFor();
 
+      // Stage 3 (docs/mathdoc.md §2.7.3): an agent's decomposition of the root waits for review.
+      const origin = new URL(url).origin;
+      const database = new URL(url).pathname.split('/')[2];
+      const [board] = await api(`${origin}/api/coordination/projects?database=${database}&branch=main`);
+      const response = await fetch(`${origin}/api/coordination/projects/${board.id}/commands`, {
+        method: 'POST',
+        headers: {'content-type': 'application/json', 'if-match': `"${board.revision}"`, 'idempotency-key': randomUUID()},
+        body: JSON.stringify({
+          type: 'submit', goal: board.root, expected_root: 'triple_one',
+          source: 'theorem triple_one_alt : 3 = triple 1 := sorry\ntheorem triple_one : triple 1 = 3 := triple_one_alt.symm\n',
+          component: 'lean-worker-sketch', mode: 'sketch',
+          definitions: board.branches.main.nodes[def.fnode].definition_ids, description: 'the root read backwards',
+        }),
+      });
+      assert.equal(response.status, 200, await response.text());
+      const decompositions = collab.getByRole('region', {name: 'Decompositions'});
+      const pending = decompositions.getByRole('region', {name: 'Pending review'});
+      await pending.getByText('the root read backwards').waitFor({timeout: 120000});
+      assert.match(await pending.innerText(), /triple_one_alt : 3 = triple 1/);
+      assert.match(await pending.innerText(), /Submitted by e2e .* needed by branch main/s);
+      await page.screenshot({path: resolve(tmpdir(), `mdc-review-pending-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      // Until it is active, its new subgoal cannot be claimed.
+      await collab.getByRole('tab', {name: 'Task board'}).click();
+      const tasks = collab.getByRole('region', {name: 'Task board'});
+      const subgoal = tasks.getByRole('row').filter({hasText: 'triple_one_alt'});
+      await subgoal.getByText('inactive').waitFor();
+      assert.equal(await subgoal.getByRole('button', {name: 'Claim'}).isDisabled(), true);
+      await collab.getByRole('tab', {name: 'Decompositions'}).click();
+      await pending.getByPlaceholder('Review comment (optional)').fill('fine as an alternative');
+      await pending.getByRole('button', {name: 'Activate'}).click();
+      await pending.waitFor({state: 'detached'});
+      await decompositions.getByText(/active by e2e: fine as an alternative/).waitFor();
+      // Notes stay on the goal and show on the task board.
+      await collab.getByRole('tab', {name: 'Task board'}).click();
+      await subgoal.getByText('inactive').waitFor({state: 'detached'});
+      assert.equal(await subgoal.getByRole('button', {name: 'Claim'}).isDisabled(), false);
+      await subgoal.getByRole('button', {name: 'Add note'}).click();
+      await subgoal.getByLabel(/^Note on/).fill('this is just triple_one turned around');
+      await subgoal.getByRole('button', {name: 'Save note'}).click();
+      await subgoal.getByText('1 note').click();
+      await subgoal.getByText(/e2e · .* this is just triple_one turned around/).waitFor();
+      await page.screenshot({path: resolve(tmpdir(), `mdc-task-notes-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      // Stage 4: the task board adds up the budget by participant identity.
+      await subgoal.getByRole('button', {name: 'Claim'}).click();
+      const budget = tasks.getByRole('table', {name: 'Budget by participant'});
+      await budget.getByRole('row').filter({hasText: 'e2e'}).getByText('100').waitFor();
+
       // Review: assemble a route, then write the certified result back in one batch.
       await collab.getByRole('tab', {name: 'Review'}).click();
       const review = collab.getByRole('region', {name: 'Review'});

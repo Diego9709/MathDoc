@@ -2,8 +2,9 @@
   // The four collaboration views (docs/mathdoc.md §4.8): proof overview, task board,
   // decompositions and result review. People use the same commands as agents. A project
   // board is shared by the database's branches; this dialog shows the current branch's view.
+  // Proposed decompositions wait for the owner's review (§2.7.3); notes stay on goals.
   import { onDestroy, onMount } from "svelte";
-  import { branchView, coordination, currentBranch, goalName, readOnlyReason, routeCloses, type Board, type Command } from "../lib/coordination";
+  import { activeGoals, branchView, branchesNeeding, coordination, currentBranch, goalName, goalStatement, readOnlyReason, routeCloses, spentBy, type Board, type Command } from "../lib/coordination";
   import { errMsg } from "../lib/format";
   import { modal } from "../lib/modal";
   let { project = null, onClose, onOpenNode }: {
@@ -14,9 +15,13 @@
   let tab = $state<Tab>("overview");
   let boards = $state<Board[]>([]), selected = $state<string | null>(null);
   let board = $state<Board | null>(null), me = $state<string>("");
+  // A delegated token (`person/name`) acts for its person, within its scopes (§2.7.4).
+  let principal = $state<string>(""), scopes = $state<string[] | null>(null);
   let error = $state<string | null>(null), busy = $state(false);
   let jobs = $state<Awaited<ReturnType<typeof coordination.jobs>>>([]);
   let allocation = $state(100), ttl = $state(300);
+  let comments = $state<Record<string, string>>({});
+  let noteFor = $state<string | null>(null), noteText = $state("");
   let alive = true, timer: ReturnType<typeof setInterval> | undefined;
   const now = () => Date.now();
 
@@ -33,7 +38,12 @@
     } catch (e) { if (alive) error = errMsg(e); }
   }
   onMount(async () => {
-    try { me = (await coordination.me()).actor; } catch { /* shown by refresh */ }
+    try {
+      const who = await coordination.me();
+      me = who.actor;
+      principal = who.principal ?? who.actor;
+      scopes = who.scopes ?? null;
+    } catch { /* shown by refresh */ }
     await refresh();
     timer = setInterval(() => void refresh(), 5000);
   });
@@ -46,7 +56,7 @@
     catch (e) { error = errMsg(e); await refresh(); }
     finally { busy = false; }
   }
-  const isOwner = $derived(board !== null && board.owner === me);
+  const isOwner = $derived(board !== null && board.owner === principal && (scopes === null || scopes.includes("maintain")));
   const goals = $derived(board ? Object.values(board.goals) : []);
   const facts = $derived(board ? Object.values(board.facts) : []);
   const openAttempts = $derived(board ? Object.values(board.attempts).filter((a) => !a.outcome) : []);
@@ -60,6 +70,19 @@
   const frozen = $derived(board ? readOnlyReason(board) : null);
   // Commands that act on a branch name the current one on project boards.
   const here = $derived(board?.project && branch ? { branch: branch.branch } : {});
+  const active = $derived(board ? activeGoals(board) : new Set<string>());
+  const proposed = $derived(facts.filter((f) => f.state === "proposed"));
+  const when = (ms: number | undefined) => (ms ? new Date(ms).toLocaleString() : "");
+  async function review(fact: string, state: "active" | "retired") {
+    const comment = comments[fact]?.trim();
+    await run({ type: "decomposition", certificate: fact, state, ...(comment ? { comment } : {}) });
+  }
+  async function addNote(goal: string) {
+    const text = noteText.trim();
+    if (!text) return;
+    await run({ type: "note", goal, text });
+    if (!error) { noteFor = null; noteText = ""; }
+  }
   const pickedBy = (fact: string) =>
     Object.entries(board?.branches ?? {}).filter(([, s]) => Object.values(s.picks).includes(fact)).map(([name]) => name);
 </script>
@@ -115,6 +138,15 @@
           <dt>Members</dt><dd>{board.members.join(", ")}</dd>
           <dt>Budget</dt><dd>{board.spent} spent · {reserved} reserved · {board.budget} total</dd>
           <dt>Trust</dt><dd>{board.minimum_trust}</dd>
+          {#if board.project}
+            <dt>Review</dt>
+            <dd>
+              {board.review === "none" ? "new decompositions are active at once" : "new decompositions wait for the owner's review"}
+              {#if isOwner && !frozen}
+                <button disabled={busy} onclick={() => void run({ type: "policy", review: board?.review === "none" ? "required" : "none" })}>{board.review === "none" ? "Require review" : "Waive review"}</button>
+              {/if}
+            </dd>
+          {/if}
           <dt>Last sync</dt><dd>{board.last_sync ? new Date(board.last_sync).toLocaleTimeString() : "never"}</dd>
         </dl>
         <table>
@@ -144,18 +176,40 @@
           <label>Lease (s) <input type="number" min="30" max="3600" bind:value={ttl} /></label>
         </div>
         <table>
-          <thead><tr><th>Goal</th><th>Kind</th><th>Status</th><th>Lease</th><th></th></tr></thead>
+          <thead><tr><th>Goal</th><th>Kind</th><th>Status</th><th>Lease</th><th>Notes</th><th></th></tr></thead>
           <tbody>
             {#each Object.values(board.tasks).filter((t) => t.state !== "cancelled") as t (t.id)}
               {@const a = t.attempt ? board.attempts[t.attempt] : undefined}
+              {@const notes = board.goals[t.goal]?.notes ?? []}
               <tr>
                 <td>{name(t.goal)}</td>
                 <td>{t.kind}</td>
-                <td><span class="status" data-status={statusOf(t.goal)}>{statusOf(t.goal)}</span></td>
+                <td>
+                  <span class="status" data-status={statusOf(t.goal)}>{statusOf(t.goal)}</span>
+                  {#if !active.has(t.goal)}<span class="status" title="No active decomposition leads to this goal yet (for example, one awaiting review), so its task cannot be claimed">inactive</span>{/if}
+                </td>
                 <td>{#if a}{a.actor} · {Math.max(0, Math.round((a.expires - now()) / 1000))}s{:else}ready{/if}</td>
+                <td class="notes">
+                  {#if notes.length}
+                    <details>
+                      <summary>{notes.length} {notes.length === 1 ? "note" : "notes"}</summary>
+                      <ul aria-label={`Notes on ${name(t.goal)}`}>
+                        {#each [...notes].reverse() as n}<li><span class="muted">{n.actor} · {when(n.at)}</span> {n.text}</li>{/each}
+                      </ul>
+                    </details>
+                  {/if}
+                  {#if noteFor === t.goal}
+                    <form class="note" onsubmit={(e) => { e.preventDefault(); void addNote(t.goal); }}>
+                      <input aria-label={`Note on ${name(t.goal)}`} maxlength="500" placeholder="What was tried, where it got stuck" bind:value={noteText} />
+                      <button type="submit" disabled={busy || !noteText.trim()}>Save note</button>
+                    </form>
+                  {:else if !frozen}
+                    <button class="link" onclick={() => { noteFor = t.goal; noteText = ""; }}>Add note</button>
+                  {/if}
+                </td>
                 <td>
                   {#if !a && statusOf(t.goal) !== "certified"}
-                    <button disabled={busy || !!frozen} onclick={() => void run({ type: "claim", task: t.id, allocation, ttl })}>Claim</button>
+                    <button disabled={busy || !!frozen || !active.has(t.goal)} onclick={() => void run({ type: "claim", task: t.id, allocation, ttl })}>Claim</button>
                   {:else if a && a.actor === me}
                     <button disabled={busy || !!frozen} onclick={() => void run({ type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl })}>Extend</button>
                     <button disabled={busy || !!frozen} onclick={() => void run({ type: "finish", attempt: a.id, epoch: a.epoch, spent: 0, outcome: "released" })}>Release</button>
@@ -165,6 +219,16 @@
             {/each}
           </tbody>
         </table>
+        {#if Object.keys(board.attempts).length}
+          <table aria-label="Budget by participant">
+            <thead><tr><th>Participant</th><th>Attempts</th><th>Spent</th><th>Reserved</th></tr></thead>
+            <tbody>
+              {#each spentBy(board) as row (row.actor)}
+                <tr><td>{row.actor}</td><td>{row.attempts}</td><td>{row.spent}</td><td>{row.reserved}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
         {#if isOwner}
           <p class="muted">Add a decomposition task for a goal:</p>
           <div class="controls">
@@ -176,7 +240,33 @@
       </section>
     {:else if tab === "decompositions"}
       <section aria-label="Decompositions">
-        <p class="muted">A decomposition is a conditional certificate: its goal follows from its premises. Paused ones stay as facts but are never chosen for assembly. Each branch's route uses the decompositions it picked; other goals are chosen automatically.</p>
+        <p class="muted">A decomposition is a conditional certificate: its goal follows from its premises. Only active ones are scheduled and assembled: proposed ones wait for the owner's review, paused and retired ones stay as facts. Each branch's route uses the decompositions it picked; other goals are chosen automatically.</p>
+        {#if proposed.length}
+          <section class="pending" aria-label="Pending review">
+            <h4>Pending review ({proposed.length})</h4>
+            {#each proposed as f (f.id)}
+              {@const needing = branchesNeeding(board, f.goal)}
+              <article>
+                <p><strong>{name(f.goal)}</strong> <code title={f.id}>{f.id.slice(0, 10)}</code> ⇐</p>
+                <ul>{#each f.premises as p}<li><code>{goalStatement(board, p)}</code> <span class="status" data-status={statusOf(p)}>{statusOf(p)}</span></li>{/each}</ul>
+                {#if f.description}<p class="description">{f.description}</p>{/if}
+                <p class="muted">
+                  {f.submitter ? `Submitted by ${f.submitter}` : "Found by sync"}{f.submitted_at ? ` · ${when(f.submitted_at)}` : ""}
+                  · {needing.length ? `needed by ${needing.length === 1 ? "branch" : "branches"} ${needing.join(", ")}` : "no branch route reaches its goal"}
+                </p>
+                {#if isOwner && !frozen}
+                  <div class="controls">
+                    <input aria-label={`Review comment on ${f.id.slice(0, 10)}`} placeholder="Review comment (optional)" maxlength="2000" bind:value={comments[f.id]} />
+                    <button disabled={busy} onclick={() => void review(f.id, "active")}>Activate</button>
+                    <button disabled={busy} onclick={() => void review(f.id, "retired")}>Retire</button>
+                  </div>
+                {:else}
+                  <p class="muted">Waiting for the owner's review.</p>
+                {/if}
+              </article>
+            {/each}
+          </section>
+        {/if}
         {#each goals.filter((g) => facts.some((f) => f.goal === g.key)) as g (g.key)}
           <h4>{name(g.key)} <span class="status" data-status={g.status}>{g.status}</span></h4>
           <ul class="facts">
@@ -185,13 +275,16 @@
                 <code title={f.id}>{f.id.slice(0, 10)}</code>
                 {#if f.premises.length}⇐ {f.premises.map(name).join(", ")}{:else}complete proof{/if}
                 · {f.trust} · {f.state}{f.available ? "" : " · no longer shared"}
-                {#if f.premises.includes(f.goal)}<span class="warn">cycle</span>{/if}
+                {#if f.premises.includes(f.goal)}<span class="warn" title={f.retired_reason === "premise_is_goal" ? "A premise is the goal itself, so it was retired on arrival" : ""}>cycle</span>{/if}
+                {#if f.description}<span class="description">· {f.description}</span>{/if}
+                {#if f.submitter}<span class="muted">· by {f.submitter}</span>{/if}
+                {#if f.review}<span class="muted" title={f.review.comment ?? ""}>· {f.review.state} by {f.review.actor}{f.review.comment ? `: ${f.review.comment}` : ""}</span>{/if}
                 {#if onRoute.has(f.id)}<span class="route">on route</span>{/if}
                 {#each pickedBy(f.id) as name}<span class="route">picked by {name}</span>{/each}
                 {#if isOwner && view && board.project && branch}
                   {#if view.picks[f.goal] === f.id}
                     <button disabled={busy || !!frozen} onclick={() => void run({ type: "pick", branch: branch.branch, goal: f.goal, certificate: null })} title="Let assembly choose this goal's decomposition">Unpick</button>
-                  {:else}
+                  {:else if f.state === "active"}
                     <button disabled={busy || !!frozen} onclick={() => void run({ type: "pick", branch: branch.branch, goal: f.goal, certificate: f.id })} title="This branch's route uses this decomposition">Use on this branch</button>
                   {/if}
                 {/if}
@@ -259,6 +352,14 @@
   .route { color:var(--mdc-accent); margin-left:.3rem; }
   tr.current td:first-child { font-weight:600; color:var(--mdc-accent); }
   .facts li.paused { opacity:.6; }
+  .pending { border:1px solid var(--mdc-accent); border-radius:var(--mdc-radius-sm); padding:.5rem .75rem; margin:.6rem 0; }
+  .pending article + article { border-top:1px solid var(--mdc-border); margin-top:.5rem; padding-top:.5rem; }
+  .pending ul { margin:.2rem 0 .3rem; }
+  .pending .controls input { width:18rem; }
+  .description { font-style:italic; }
+  td.notes ul { margin:.2rem 0; padding-left:1rem; max-width:22rem; }
+  form.note { display:flex; gap:.3rem; }
+  form.note input { width:14rem; }
   .facts li.unavailable { text-decoration:line-through; }
   .controls { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
   .controls input { width:6rem; }

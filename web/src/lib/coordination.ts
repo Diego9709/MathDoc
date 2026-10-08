@@ -16,8 +16,22 @@ export interface Environment extends EnvironmentInput {
   replaces_environment_id?: string;
   updated_by: string;
 }
-export interface Goal { key: string; statement: string; status: "insufficient" | "derivable" | "certified"; identity?: unknown }
-export interface Fact { id: string; goal: string; premises: string[]; trust: Trust; state: "active" | "paused" | "retired"; available: boolean }
+export interface Note { actor: string; at: number; text: string; attempt?: string }
+export interface Goal {
+  key: string; statement: string; status: "insufficient" | "derivable" | "certified"; identity?: unknown;
+  /** How the goal is stated (docs/mathdoc.md §4.11). */
+  proposition?: string; declaration?: { name: string; binders: string; type: string };
+  /** Attempt notes, oldest first (§2.7.3). */
+  notes?: Note[];
+}
+/** `proposed` decompositions wait for the owner's review and schedule nothing (§2.7.3). */
+export type FactState = "proposed" | "active" | "paused" | "retired";
+export interface Fact {
+  id: string; goal: string; premises: string[]; trust: Trust; state: FactState; available: boolean;
+  description?: string; submitter?: string; submitted_at?: number;
+  review?: { actor: string; at: number; state: Exclude<FactState, "proposed">; comment?: string };
+  retired_reason?: "premise_is_goal";
+}
 export interface Task { id: string; goal: string; kind: "prove" | "decompose" | "formalize"; priority: number; state: "ready" | "leased" | "cancelled"; epoch: number; attempt?: string }
 export interface Attempt { id: string; task: string; actor: string; epoch: number; expires: number; reserved: number; spent: number; outcome?: string }
 export interface Run {
@@ -58,6 +72,8 @@ export interface Board {
   attempts: Record<string, Attempt>; runs: Record<string, Run>;
   /** A database's project: one root theorem, branches as routes over shared goals. */
   project?: { database: string; environment_id: string; root_node: string; superseded?: boolean };
+  /** Project boards: whether new sketches wait for review (absent: they do). */
+  review?: "required" | "none";
   /** Branches the reader can read. */
   branches?: Record<string, BranchState>;
   /** Stage 4 per-branch proof requests (read-only). */
@@ -69,9 +85,11 @@ export type Command =
   | { type: "sync" }
   | { type: "claim"; task: string; allocation: number; ttl: number }
   | { type: "heartbeat"; attempt: string; epoch: number; ttl: number }
-  | { type: "finish"; attempt: string; epoch: number; spent: number; outcome: "no_progress" | "submitted" | "execution_failed" | "released" }
+  | { type: "finish"; attempt: string; epoch: number; spent: number; outcome: "no_progress" | "submitted" | "execution_failed" | "released"; note?: string }
   | { type: "task"; goal: string; kind: "prove" | "decompose" | "formalize"; priority: number }
-  | { type: "decomposition"; certificate: string; state: "active" | "paused" | "retired" }
+  | { type: "decomposition"; certificate: string; state: "active" | "paused" | "retired"; comment?: string }
+  | { type: "note"; goal: string; text: string }
+  | { type: "policy"; review: "required" | "none" }
   | { type: "attach"; branch: string }
   | { type: "pick"; branch: string; goal: string; certificate: string | null }
   | { type: "submit_node"; node: string; branch?: string }
@@ -92,7 +110,9 @@ export function currentBranch(): { database: string; branch: string } | null {
 }
 
 export const coordination = {
-  me: () => fetchJson<{ actor: string; admin: boolean }>("/api/me"),
+  /** `actor` is `person/name` for a delegated token, whose `scopes` limit it (§2.7.4). */
+  me: () =>
+    fetchJson<{ actor: string; principal?: string; admin: boolean; scopes?: string[] | null }>("/api/me"),
   environment: (database: string) =>
     fetchJson<Environment>(`${base}/environments/${database}`),
   putEnvironment: (database: string, input: EnvironmentInput) =>
@@ -155,4 +175,60 @@ export function goalName(board: Board, goal: string): string {
     if (node) return node.title;
   }
   return board.goals[goal]?.statement || `${goal.slice(0, 10)}...`;
+}
+
+/**
+ * Goals whose tasks can be claimed: reachable from the root through active facts (the
+ * coordinator's `activeGoals`). Premises of a proposed decomposition are not, until it is active.
+ */
+export function activeGoals(board: Board): Set<string> {
+  const active = new Set([board.root]);
+  for (let before = -1; before !== active.size; ) {
+    before = active.size;
+    for (const f of Object.values(board.facts))
+      if (f.available && f.state === "active" && active.has(f.goal))
+        for (const p of f.premises) active.add(p);
+  }
+  return active;
+}
+/**
+ * The branches whose route can need a goal: reachable from the root through active facts,
+ * where a picked goal follows only its pick. A review of a goal's decomposition matters to them.
+ */
+export function branchesNeeding(board: Board, goal: string): string[] {
+  return Object.entries(board.branches ?? {})
+    .filter(([, state]) => {
+      const reach = new Set([board.root]);
+      for (let before = -1; before !== reach.size; ) {
+        before = reach.size;
+        for (const f of Object.values(board.facts))
+          if (
+            f.available && f.state === "active" && reach.has(f.goal) &&
+            (!Object.hasOwn(state.picks, f.goal) || state.picks[f.goal] === f.id)
+          )
+            for (const p of f.premises) reach.add(p);
+      }
+      return reach.has(goal);
+    })
+    .map(([name]) => name);
+}
+/** A goal as a statement: its declaration, else its proposition, else its name. */
+export function goalStatement(board: Board, goal: string): string {
+  const g = board.goals[goal];
+  if (g?.declaration)
+    return `${g.declaration.name}${g.declaration.binders ? ` ${g.declaration.binders}` : ""} : ${g.declaration.type}`;
+  return g?.proposition ?? goalName(board, goal);
+}
+
+/** Budget by participant: each agent's own identity, spent (closed attempts) and reserved (open). */
+export function spentBy(board: Board): { actor: string; spent: number; reserved: number; attempts: number }[] {
+  const out = new Map<string, { actor: string; spent: number; reserved: number; attempts: number }>();
+  for (const a of Object.values(board.attempts)) {
+    const row = out.get(a.actor) ?? { actor: a.actor, spent: 0, reserved: 0, attempts: 0 };
+    row.attempts++;
+    if (a.outcome) row.spent += a.spent;
+    else row.reserved += a.reserved;
+    out.set(a.actor, row);
+  }
+  return [...out.values()].sort((x, y) => y.spent - x.spent || x.actor.localeCompare(y.actor));
 }
