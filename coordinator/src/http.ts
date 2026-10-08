@@ -17,8 +17,9 @@ import {
   owner,
   requireThat,
   nodeRefSchema,
-  ingest,
+  checkFact,
   attached,
+  rankGoals,
   type Board,
 } from "./domain.js";
 import { fetchBase, resolveProject } from "./worker.js";
@@ -67,12 +68,13 @@ function send(res: ServerResponse, status: number, value: unknown) {
 function key(req: IncomingMessage) {
   return z.string().min(1).max(200).parse(req.headers["idempotency-key"]);
 }
+/** The revision the client read; `*` (null) for commands checked against the current state. */
 function revision(req: IncomingMessage) {
   const h = z
     .string()
-    .regex(/^"\d+"$/)
+    .regex(/^("\d+"|\*)$/)
     .parse(req.headers["if-match"]);
-  return Number(h.slice(1, -1));
+  return h === "*" ? null : Number(h.slice(1, -1));
 }
 const bindingSchema = nodeRefSchema.pick({ database: true, branch: true });
 export function server(
@@ -153,16 +155,21 @@ export function server(
         ? { database: b.request.database, branch: b.request.branch }
         : undefined;
   // Branches the actor cannot read are left out of a project board, with their runs.
+  // Boards are loaded per request, so only the maps that lose entries are copied (§2.7.5).
   const visible = async (actor: string, b: Board): Promise<Board> => {
     if (!b.project || !b.branches) return b;
-    const out = structuredClone(b);
+    const hidden: string[] = [];
     for (const name of Object.keys(b.branches))
-      if (!(await canRead(actor, b.project.database, name)))
-        delete out.branches![name];
-    for (const [id, r] of Object.entries(out.runs))
-      if (r.branch && !Object.hasOwn(out.branches!, r.branch))
-        delete out.runs[id];
-    return out;
+      if (!(await canRead(actor, b.project.database, name))) hidden.push(name);
+    if (!hidden.length) return b;
+    const branches = { ...b.branches };
+    for (const name of hidden) delete branches[name];
+    const runs = Object.fromEntries(
+      Object.entries(b.runs).filter(
+        ([, r]) => !r.branch || Object.hasOwn(branches, r.branch),
+      ),
+    );
+    return { ...b, branches, runs };
   };
   return createServer(async (req, res) => {
     try {
@@ -380,7 +387,7 @@ export function server(
         ).rows[0]?.body;
         if (prior) {
           requireThat(prior.creation_hash === digest, "idempotency_conflict");
-          send(res, 200, prior);
+          send(res, 200, await store.get(id, actor));
           return;
         }
         if (input.node_ref) {
@@ -418,15 +425,65 @@ export function server(
         return;
       }
       const match =
-        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
+        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals|next)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
           path,
         );
       requireThat(match, "not_found", 404);
       const [, id, operation, child, draft] = match;
-      const b: Board = await store.get(id, actor);
-      const h = home(b);
+      // Commands, jobs and history need only the board's meta (§2.7.5); other routes read it.
+      const m = await store.meta(id, actor);
+      const h = m.home;
       if (h && !(await canRead(actor, h.database, h.branch)))
         throw new Fault("not_found", 404);
+      if (operation === "commands" && method === "POST") {
+        const input = commandSchema.parse(await body(req));
+        requireScope(who, ...commandScopes[input.type]);
+        if (input.type === "members") {
+          requireThat(
+            input.members.every((m) => Object.hasOwn(cfg.actors, m)),
+            "unknown_member",
+            400,
+          );
+          if (m.home)
+            await membersCanRead(input.members, m.home.database, m.home.branch);
+        }
+        // A command naming a branch needs to read it; attaching it needs to edit it.
+        if (m.database && "branch" in input && input.branch !== undefined)
+          await documentRole(
+            actor,
+            m.database,
+            input.branch,
+            input.type === "attach" ? "proof_request_create" : "read",
+          );
+        // Accepting writes the run's route into its branch.
+        if (m.database && input.type === "accept") {
+          const runs = (await store.get(id, actor)).runs;
+          const run = Object.hasOwn(runs, input.run)
+            ? runs[input.run]
+            : undefined;
+          if (run?.branch)
+            await documentRole(actor, m.database, run.branch, "write");
+        }
+        send(
+          res,
+          200,
+          await store.apply(id, actor, revision(req), key(req), input),
+        );
+        return;
+      }
+      if (operation === "jobs" && child && method === "GET") {
+        send(res, 200, await store.job(id, actor, child));
+        return;
+      }
+      if (operation === "jobs" && method === "GET") {
+        send(res, 200, await store.jobs(id, actor));
+        return;
+      }
+      if (operation === "history" && method === "GET") {
+        send(res, 200, await store.history(id, actor));
+        return;
+      }
+      const b: Board = await store.get(id, actor);
       if (operation === "nodes" && child && draft && method === "GET") {
         // Agents start from the converted node: placeholders, definitions and identity.
         requireThat(documents, "documents_not_configured", 503);
@@ -500,54 +557,36 @@ export function server(
         );
         return;
       }
+      if (operation === "next" && !child && method === "GET") {
+        // §2.7.5: the goals most worth working on, best first.
+        const name = url.searchParams.get("branch") ?? undefined;
+        if (
+          name !== undefined &&
+          b.project &&
+          !(await canRead(actor, b.project.database, name))
+        )
+          throw new Fault("not_found", 404);
+        const limit = z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .default(20)
+          .parse(url.searchParams.get("limit") ?? undefined);
+        send(res, 200, {
+          revision: b.revision,
+          candidates: rankGoals(b, name)
+            .slice(0, limit)
+            .map((c) => ({
+              ...c,
+              statement: b.goals[c.goal].statement,
+              negates: b.negations?.[c.goal] ?? null,
+            })),
+        });
+        return;
+      }
       if (!operation && method === "GET") {
         send(res, 200, await visible(actor, b));
-        return;
-      }
-      if (operation === "commands" && method === "POST") {
-        const input = commandSchema.parse(await body(req));
-        requireScope(who, ...commandScopes[input.type]);
-        if (input.type === "members") {
-          requireThat(
-            input.members.every((m) => Object.hasOwn(cfg.actors, m)),
-            "unknown_member",
-            400,
-          );
-          if (h) await membersCanRead(input.members, h.database, h.branch);
-        }
-        // A command naming a branch needs to read it; attaching it needs to edit it.
-        if (b.project && "branch" in input && input.branch !== undefined)
-          await documentRole(
-            actor,
-            b.project.database,
-            input.branch,
-            input.type === "attach" ? "proof_request_create" : "read",
-          );
-        // Accepting writes the run's route into its branch.
-        if (b.project && input.type === "accept") {
-          const run = Object.hasOwn(b.runs, input.run)
-            ? b.runs[input.run]
-            : undefined;
-          if (run?.branch)
-            await documentRole(actor, b.project.database, run.branch, "write");
-        }
-        send(
-          res,
-          200,
-          await store.apply(id, actor, revision(req), key(req), input),
-        );
-        return;
-      }
-      if (operation === "jobs" && child && method === "GET") {
-        send(res, 200, await store.job(id, actor, child));
-        return;
-      }
-      if (operation === "jobs" && method === "GET") {
-        send(res, 200, await store.jobs(id, actor));
-        return;
-      }
-      if (operation === "history" && method === "GET") {
-        send(res, 200, await store.history(id, actor));
         return;
       }
       if (operation === "facts" && child && method === "GET") {
@@ -557,7 +596,7 @@ export function server(
           id: child,
           source: true,
         });
-        ingest(structuredClone(b), f);
+        checkFact(b, f);
         send(res, 200, f);
         return;
       }

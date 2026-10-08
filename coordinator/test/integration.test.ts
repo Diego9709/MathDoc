@@ -68,7 +68,8 @@ test(
         allocation: 60,
         ttl: 30,
       });
-      assert.equal(replay.revision, 1);
+      // Claims change only task and attempt rows, not the board's revision (§2.7.5).
+      assert.equal(replay.revision, 0);
       await assert.rejects(
         () =>
           store.apply(b.id, actor, 0, `claim-${actor}`, {

@@ -9,8 +9,10 @@ import {
   addGoal,
   attached,
   derivePicks,
+  checkFact,
   ingest,
   recompute,
+  refute,
   requireThat,
   expire,
   stateGoal,
@@ -65,11 +67,19 @@ export class Worker {
     private terminus: Terminus | null = null,
   ) {}
   private async snapshot(request: ProofRequest): Promise<Snapshot> {
+    return this.documents(request, (d) => d.load());
+  }
+  /** The branch's TerminusDB data version, without loading its documents. */
+  private async version(request: ProofRequest): Promise<string> {
+    return this.documents(request, (d) => d.version());
+  }
+  private async documents<T>(
+    request: ProofRequest,
+    fn: (d: ReturnType<Terminus["database"]>) => Promise<T>,
+  ): Promise<T> {
     requireThat(this.terminus, "documents_not_configured", 503);
     try {
-      return await this.terminus
-        .database(request.database, request.branch)
-        .load();
+      return await fn(this.terminus.database(request.database, request.branch));
     } catch (e) {
       if (e instanceof DocError)
         throw new RemoteError(
@@ -459,8 +469,7 @@ export class Worker {
       id,
       source,
     });
-    const check = structuredClone(b);
-    ingest(check, value);
+    checkFact(b, value);
     return value;
   }
   private async run(j: Job) {
@@ -666,6 +675,38 @@ export class Worker {
         );
         return;
       }
+      case "negate": {
+        // §2.7.5: resolve ¬(P) in the project's environment; its GoalKey is the negation's
+        // identity, so any proof of the same statement, however written, refutes P.
+        const target = String(j.payload.goal);
+        const g = b.goals[target];
+        requireThat(g?.proposition, "goal_unresolved");
+        const prop = `¬ (${g.proposition})`;
+        const r = await this.resolveStatement(b, prop, g.definitions ?? []);
+        const name = `not_${g.declaration?.name ?? `goal_${target.slice(0, 8)}`}`;
+        await this.store.checkpoint(
+          j,
+          (b) => {
+            const key = r.identity.key;
+            requireThat(key !== target, "identity_mismatch");
+            addGoal(b, key, r.identity, name);
+            stateGoal(b, key, {
+              proposition: prop,
+              definitions: r.definitions,
+              declaration: { name, binders: "", type: prop },
+            });
+            b.negations = { ...b.negations, [key]: target };
+            // The negation may already be proved.
+            const proof = Object.values(b.facts).find(
+              (f) => f.goal === key && !f.premises.length && f.available,
+            );
+            if (proof) refute(b, target, proof.id, Date.now());
+          },
+          true,
+          { goal: target, negation: r.identity.key, name },
+        );
+        return;
+      }
       case "import": {
         const cert = await this.shared(b, String(j.payload.certificate));
         await this.store.checkpoint(
@@ -732,6 +773,9 @@ export class Worker {
             const contract = branch.request.contract;
             if (!branch.request.bound || !contract) continue;
             try {
+              // §2.7.5: an unchanged data version means unchanged documents.
+              const version = await this.version(branch.request);
+              if (version === branch.request.checked_version) continue;
               const snap = await this.snapshot(branch.request);
               stale[name] = {
                 stale: isStale(contract, snap.nodes),
@@ -757,7 +801,7 @@ export class Worker {
             }
             for (const id of unavailable)
               if (b.facts[id]) b.facts[id].available = false;
-            for (const f of fetched) ingest(b, f, { source: "sync" });
+            for (const f of fetched) ingest(b, f, { source: "sync" }, false);
             b.cursor = page.cursor;
             b.last_sync = page.has_more ? 0 : Date.now();
             delete b.sync_error;

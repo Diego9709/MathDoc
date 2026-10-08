@@ -324,8 +324,8 @@ async function flow(leanground: { url: string; token: string }) {
     p = await http.project(id);
     assert.ok(Object.values(p.runs).some((r) => r.status === "certified"));
 
-    // Replay 2: the request is lost before it arrives, and the revision moves on. The resend is
-    // refused as outdated, so a new submission is made: still one job.
+    // Replay 2: the request is lost before it arrives, and the revision moves on. `submit` is
+    // checked against the current state, not the revision (§2.7.5): the resend applies.
     const third = await mdc("pull", sub.goal, "--no-claim", "-o", "again.lean");
     assert.equal(third.lease, null);
     await edit("again.lean", (t) =>
@@ -347,7 +347,7 @@ async function flow(leanground: { url: string; token: string }) {
     const subs = (await record("again.lean")).submissions;
     assert.deepEqual(
       subs.map((s: { status: string }) => s.status),
-      ["not_applied", "queued"],
+      ["queued"],
     );
     assert.equal(await submits(id), before + 1);
   } finally {

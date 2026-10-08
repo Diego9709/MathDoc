@@ -96,6 +96,8 @@ export interface Goal {
   declaration?: Declaration;
   /** Attempt notes, oldest first; the latest NOTES_KEPT are kept (docs/mathdoc.md §2.7.3). */
   notes?: Note[];
+  /** Set when a complete proof of the goal's negation exists (§2.7.5): the goal is false. */
+  refuted?: { certificate: string; at?: number };
 }
 /** What someone learned working on a goal: what was tried, where it got stuck. */
 export interface Note {
@@ -129,12 +131,15 @@ export interface Fact {
   review?: Review;
   /** Retired on arrival: a premise is the goal itself (T ⇐ {T}), so it can never help. */
   retired_reason?: "premise_is_goal";
+  /** For a refuted certificate: the premise proved false. */
+  refuted_by?: string;
 }
 /**
  * docs/mathdoc.md §2.7.3: only `active` certificates take part in routes, claims and assembly.
  * A `proposed` decomposition waits for an owner's review.
  */
-export type FactState = "proposed" | "active" | "paused" | "retired";
+export type FactState =
+  "proposed" | "active" | "paused" | "retired" | "refuted";
 export interface Review {
   actor: string;
   at: number;
@@ -224,6 +229,8 @@ export interface Board {
   branches?: Record<string, BranchState>;
   /** Project boards: whether new sketches wait for review (absent: they do). */
   review?: "required" | "none";
+  /** Negation goal → the goal it refutes once completely proved (§2.7.5). */
+  negations?: Record<string, string>;
 }
 export interface Accepted {
   certification_id: string;
@@ -462,11 +469,11 @@ function initialState(
     return "active";
   return b.review === "none" ? "active" : "proposed";
 }
-export function ingest(
-  b: Board,
-  raw: unknown,
-  origin: Origin = { source: "agent" },
-) {
+/**
+ * Whether a certificate can enter the board: shared with this project, in its environment and
+ * trusted enough. Changes nothing, so checking needs no copy of the board (§2.7.5).
+ */
+export function checkFact(b: Board, raw: unknown) {
   const f = factSchema.parse(raw);
   requireThat(
     f.access.visibility === "public" ||
@@ -487,12 +494,23 @@ export function ingest(
     trustRank[f.trust] >= trustRank[b.minimum_trust],
     "trust_rejected",
   );
+  for (const key of [f.id, f.goal, ...f.premises])
+    requireThat(
+      !["__proto__", "constructor", "prototype"].includes(key),
+      "invalid_fact",
+    );
+  return f;
+}
+/** Add or refresh a certificate. A sync adding many recomputes statuses once, at its end. */
+export function ingest(
+  b: Board,
+  raw: unknown,
+  origin: Origin = { source: "agent" },
+  recomputeStatus = true,
+) {
+  const f = checkFact(b, raw);
   addGoal(b, f.goal, f.request.goal);
   for (const key of f.premises) addGoal(b, key);
-  requireThat(
-    !["__proto__", "constructor", "prototype"].includes(f.id),
-    "invalid_fact",
-  );
   const prior = Object.hasOwn(b.facts, f.id) ? b.facts[f.id] : undefined;
   const premises = [...new Set(f.premises)];
   // Re-ingestion (every sync) refreshes the certificate and keeps what the board added.
@@ -511,7 +529,62 @@ export function ingest(
     if (origin.at !== undefined) fact.submitted_at = origin.at;
     if (premises.includes(f.goal)) fact.retired_reason = "premise_is_goal";
   }
-  recompute(b);
+  // A complete proof of a registered negation refutes its goal.
+  if (!premises.length && b.negations && Object.hasOwn(b.negations, f.goal))
+    refute(b, b.negations[f.goal], f.id, origin.at);
+  if (recomputeStatus) recompute(b);
+}
+/**
+ * docs/mathdoc.md §2.7.5: `goal` is false. Certificates using it as a premise are refuted and
+ * leave every route; tasks of the goal, and of goals only those certificates reached, are
+ * cancelled, ending their leases; the goals of refuted certificates get a note saying why.
+ */
+export function refute(
+  b: Board,
+  goal: string,
+  certificate: string,
+  at?: number,
+) {
+  const g = b.goals[goal];
+  if (!g || g.refuted) return;
+  const before = activeGoals(b);
+  g.refuted = { certificate, ...(at !== undefined ? { at } : {}) };
+  const refuted = Object.values(b.facts).filter(
+    (f) => f.premises.includes(goal) && f.state !== "refuted",
+  );
+  for (const f of refuted) {
+    f.state = "refuted";
+    f.refuted_by = goal;
+  }
+  const after = activeGoals(b);
+  for (const t of Object.values(b.tasks)) {
+    if (t.state === "cancelled") continue;
+    if (t.goal !== goal && (!before.has(t.goal) || after.has(t.goal))) continue;
+    if (t.attempt && Object.hasOwn(b.attempts, t.attempt)) {
+      const a = b.attempts[t.attempt];
+      if (!a.outcome) {
+        // As when a member leaves: the reservation may be spent.
+        a.outcome = "cancelled";
+        a.spent = a.reserved;
+        b.spent += a.spent;
+      }
+    }
+    t.state = "cancelled";
+    delete t.attempt;
+  }
+  const label = g.declaration?.name ?? (g.statement || goal.slice(0, 10));
+  const actor = "mathdoc";
+  const note = (on: string, text: string) =>
+    addNote(b, on, { actor, at: at ?? 0, text: text.slice(0, NOTE_LENGTH) });
+  note(
+    goal,
+    `Refuted: certificate ${certificate.slice(0, 10)} proves its negation.`,
+  );
+  for (const f of refuted)
+    note(
+      f.goal,
+      `Decomposition ${f.id.slice(0, 10)}${f.submitter ? ` by ${f.submitter}` : ""} is refuted: its premise ${label} is false.`,
+    );
 }
 /** Keep a note on a goal; the oldest beyond NOTES_KEPT are dropped. */
 export function addNote(b: Board, goal: string, note: Note) {
@@ -538,6 +611,10 @@ export function recompute(b: Board) {
     }
   }
 }
+/**
+ * Goals worth scheduling: reachable from the root through active certificates, and the
+ * registered negations of such goals (refuting one is as useful as proving it).
+ */
 export function activeGoals(b: Board) {
   const active = new Set([b.root]);
   let before = -1;
@@ -546,8 +623,104 @@ export function activeGoals(b: Board) {
     for (const f of Object.values(b.facts))
       if (f.available && f.state === "active" && active.has(f.goal))
         for (const p of f.premises) active.add(p);
+    for (const [negation, target] of Object.entries(b.negations ?? {}))
+      if (active.has(target) && !b.goals[target]?.refuted) active.add(negation);
   }
   return active;
+}
+/** A goal recommended by `next` (docs/mathdoc.md §2.7.5). */
+export interface Candidate {
+  goal: string;
+  task: string;
+  score: number;
+  /** Branches whose routes need the goal. */
+  branches: string[];
+  failures: number;
+}
+const FAILED = new Set(["no_progress", "execution_failed", "expired"]);
+/**
+ * What to work on next: goals on the frontier of the branches' routes (needed, unsolved, with no
+ * active decomposition of their own), each scored by the routes needing it, weighted by how
+ * close each route is to closing (1 / its unsolved goals), divided by 1 + its failed attempts.
+ * Negations count for the goal they refute. Free, unleased prove tasks only; best first.
+ */
+export function rankGoals(b: Board, branch?: string): Candidate[] {
+  const usable = Object.values(b.facts).filter(
+    (f) => f.available && f.state === "active",
+  );
+  const solved = new Set<string>();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const f of usable)
+      if (!solved.has(f.goal) && f.premises.every((p) => solved.has(p))) {
+        solved.add(f.goal);
+        changed = true;
+      }
+  }
+  const routes: [string, Record<string, string>][] = b.project
+    ? Object.entries(b.branches ?? {})
+        .filter(([name, s]) => s.request.bound && (!branch || name === branch))
+        .map(([name, s]) => [name, s.picks])
+    : [["board", {}]];
+  const score = new Map<string, number>();
+  const needers = new Map<string, string[]>();
+  for (const [name, picks] of routes) {
+    // The unsolved goals this route can still need, following its picks.
+    const needed = new Set<string>();
+    const queue = [b.root];
+    while (queue.length) {
+      const g = queue.pop()!;
+      if (needed.has(g) || solved.has(g) || b.goals[g]?.refuted) continue;
+      needed.add(g);
+      for (const f of usable)
+        if (f.goal === g && (!Object.hasOwn(picks, g) || picks[g] === f.id))
+          queue.push(...f.premises);
+    }
+    const weight = needed.size ? 1 / needed.size : 0;
+    for (const g of needed) {
+      score.set(g, (score.get(g) ?? 0) + weight);
+      needers.set(g, [...(needers.get(g) ?? []), name]);
+    }
+  }
+  for (const [negation, target] of Object.entries(b.negations ?? {}))
+    if (score.has(target)) {
+      score.set(negation, score.get(target)!);
+      needers.set(negation, needers.get(target)!);
+    }
+  const decomposed = new Set(
+    usable.filter((f) => f.premises.length).map((f) => f.goal),
+  );
+  const out: Candidate[] = [];
+  for (const t of Object.values(b.tasks)) {
+    const g = b.goals[t.goal];
+    if (
+      t.kind !== "prove" ||
+      t.state !== "ready" ||
+      !g ||
+      g.status === "certified" ||
+      g.refuted ||
+      decomposed.has(t.goal) ||
+      !score.has(t.goal)
+    )
+      continue;
+    const failures = Object.values(b.attempts).filter(
+      (a) =>
+        a.outcome && FAILED.has(a.outcome) && b.tasks[a.task]?.goal === t.goal,
+    ).length;
+    out.push({
+      goal: t.goal,
+      task: t.id,
+      score: Math.round((score.get(t.goal)! / (1 + failures)) * 1e6) / 1e6,
+      branches: needers.get(t.goal)!,
+      failures,
+    });
+  }
+  return out.sort(
+    (x, y) =>
+      y.score - x.score ||
+      x.failures - y.failures ||
+      x.goal.localeCompare(y.goal),
+  );
 }
 /** A route through active facts; a picked goal is proved only by its picked certificate. */
 export function selectRoute(
@@ -597,16 +770,91 @@ export function selectRoute(
 export function expire(b: Board, now: number) {
   for (const a of Object.values(b.attempts))
     if (!a.outcome && a.expires <= now) {
-      // A disconnected participant may have spent all of the reservation.
-      a.outcome = "expired";
-      a.spent = a.reserved;
+      expireLease(a, b.tasks[a.task]);
       b.spent += a.spent;
-      const t = b.tasks[a.task];
-      if (t.attempt === a.id) {
-        t.state = "ready";
-        delete t.attempt;
-      }
     }
+}
+/**
+ * The lease rules (§4.8), shared by the board path and the lease path of the store, which
+ * keeps tasks and attempts in their own rows (§2.7.5). Each mutates only what it is given.
+ */
+export function takeLease(
+  t: Task,
+  actor: string,
+  c: { allocation: number; ttl: number },
+  now: number,
+  ctx: {
+    active: boolean;
+    certified: boolean;
+    committed: number;
+    budget: number;
+  },
+): Attempt {
+  requireThat(t.state === "ready", "task_unavailable");
+  requireThat(ctx.active, "inactive_goal");
+  requireThat(!ctx.certified, "already_certified");
+  requireThat(ctx.committed + c.allocation <= ctx.budget, "budget_exhausted");
+  const a: Attempt = {
+    id: randomUUID(),
+    task: t.id,
+    actor,
+    epoch: ++t.epoch,
+    expires: now + c.ttl * 1000,
+    reserved: c.allocation,
+    spent: 0,
+  };
+  t.state = "leased";
+  t.attempt = a.id;
+  return a;
+}
+function holdsLease(
+  a: Attempt,
+  t: Task,
+  actor: string,
+  epoch: number,
+  now: number,
+) {
+  requireThat(
+    a.actor === actor &&
+      a.epoch === epoch &&
+      !a.outcome &&
+      a.expires > now &&
+      t.attempt === a.id,
+    "stale_lease",
+  );
+}
+export function renewLease(
+  a: Attempt,
+  t: Task,
+  actor: string,
+  c: { epoch: number; ttl: number },
+  now: number,
+) {
+  holdsLease(a, t, actor, c.epoch, now);
+  a.expires = now + c.ttl * 1000;
+}
+export function endLease(
+  a: Attempt,
+  t: Task,
+  actor: string,
+  c: { epoch: number; spent: number; outcome: string },
+  now: number,
+) {
+  holdsLease(a, t, actor, c.epoch, now);
+  requireThat(c.spent <= a.reserved, "allocation_exceeded");
+  a.spent = c.spent;
+  a.outcome = c.outcome;
+  t.state = "ready";
+  delete t.attempt;
+}
+/** A disconnected participant may have spent all of the reservation. */
+export function expireLease(a: Attempt, t: Task) {
+  a.outcome = "expired";
+  a.spent = a.reserved;
+  if (t.attempt === a.id) {
+    t.state = "ready";
+    delete t.attempt;
+  }
 }
 const short = z.string().min(1).max(200);
 const ttl = z.number().int().min(30).max(3600).default(300);
@@ -673,6 +921,12 @@ export const commandSchema = z.discriminatedUnion("type", [
       type: z.literal("note"),
       goal: short,
       text: z.string().trim().min(1).max(NOTE_LENGTH),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("negate"),
+      goal: short,
     })
     .strict(),
   z
@@ -792,6 +1046,21 @@ export function command(
     case "note":
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       return { result: addNote(b, c.goal, { actor, at: now, text: c.text }) };
+    case "negate": {
+      // §2.7.5: the negation becomes a goal of its own; proving it refutes this one.
+      requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
+      const g = b.goals[c.goal];
+      const known = Object.entries(b.negations ?? {}).find(
+        ([, t]) => t === c.goal,
+      );
+      if (known) return { result: { goal: c.goal, negation: known[0] } };
+      requireThat(g.identity && g.proposition, "goal_unresolved");
+      requireThat(!g.refuted, "already_refuted");
+      return {
+        result: { queued: true },
+        job: { kind: "negate", payload: { goal: c.goal } },
+      };
+    }
     case "policy":
       owner(b, actor);
       requireThat(b.project, "not_a_project_board", 400);
@@ -821,27 +1090,15 @@ export function command(
     case "claim": {
       const t = Object.hasOwn(b.tasks, c.task) ? b.tasks[c.task] : undefined;
       requireThat(t, "not_found", 404);
-      requireThat(t.state === "ready", "task_unavailable");
-      requireThat(activeGoals(b).has(t.goal), "inactive_goal");
-      requireThat(b.goals[t.goal].status !== "certified", "already_certified");
       const reserved = Object.values(b.attempts)
         .filter((a) => !a.outcome)
         .reduce((s, a) => s + a.reserved, 0);
-      requireThat(
-        b.spent + reserved + c.allocation <= b.budget,
-        "budget_exhausted",
-      );
-      const a: Attempt = {
-        id: randomUUID(),
-        task: t.id,
-        actor,
-        epoch: ++t.epoch,
-        expires: now + c.ttl * 1000,
-        reserved: c.allocation,
-        spent: 0,
-      };
-      t.state = "leased";
-      t.attempt = a.id;
+      const a = takeLease(t, actor, c, now, {
+        active: activeGoals(b).has(t.goal),
+        certified: b.goals[t.goal].status === "certified",
+        committed: b.spent + reserved,
+        budget: b.budget,
+      });
       b.attempts[a.id] = a;
       return { result: a };
     }
@@ -851,22 +1108,11 @@ export function command(
         ? b.attempts[c.attempt]
         : undefined;
       requireThat(a, "not_found", 404);
-      requireThat(
-        a.actor === actor &&
-          a.epoch === c.epoch &&
-          !a.outcome &&
-          a.expires > now &&
-          b.tasks[a.task].attempt === a.id,
-        "stale_lease",
-      );
-      if (c.type === "heartbeat") a.expires = now + c.ttl * 1000;
+      const t = b.tasks[a.task];
+      if (c.type === "heartbeat") renewLease(a, t, actor, c, now);
       else {
-        requireThat(c.spent <= a.reserved, "allocation_exceeded");
-        a.spent = c.spent;
-        a.outcome = c.outcome;
+        endLease(a, t, actor, c, now);
         b.spent += a.spent;
-        b.tasks[a.task].state = "ready";
-        delete b.tasks[a.task].attempt;
         if (c.note)
           addNote(b, b.tasks[a.task].goal, {
             actor,
@@ -881,6 +1127,8 @@ export function command(
       owner(b, actor);
       requireThat(Object.hasOwn(b.facts, c.certificate), "not_found", 404);
       const f = b.facts[c.certificate];
+      // A false premise stays false.
+      requireThat(f.state !== "refuted", "certificate_refuted");
       f.state = c.state;
       f.review = {
         actor,

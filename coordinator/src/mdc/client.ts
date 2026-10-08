@@ -83,6 +83,22 @@ export class Client {
     return this.request("GET", `/api/coordination/projects/${project}`);
   }
   /**
+   * Send a command checked against the current state (claim, heartbeat, finish, submit, note…;
+   * docs/mathdoc.md §2.7.5) with `If-Match: *`, without reading the board first.
+   */
+  current(
+    project: string,
+    body: unknown,
+    key: string,
+  ): Promise<{ revision: number; result: any; job?: string }> {
+    return this.request(
+      "POST",
+      `/api/coordination/projects/${project}/commands`,
+      body,
+      { "if-match": "*", "idempotency-key": key },
+    );
+  }
+  /**
    * Send one board command at the current revision. `key` derives the idempotency key from
    * the revision; a revision conflict means the command did not run, so it is retried.
    */

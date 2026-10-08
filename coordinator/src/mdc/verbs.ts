@@ -133,10 +133,10 @@ async function renew(ctx: VerbContext, w: Workspace, skip?: string) {
     if (Date.parse(l.expires) - ctx.now() > (l.ttl * 1000) / 2) continue;
     try {
       // The server's clock decides whether the lease has lapsed.
-      const res = await ctx.client.command(
+      const res = await ctx.client.current(
         r.project,
         { type: "heartbeat", attempt: l.attempt, epoch: l.epoch, ttl: l.ttl },
-        (rev) => `heartbeat-${l.attempt}-r${rev}`,
+        `heartbeat-${l.attempt}-${l.expires}`,
       );
       l.expires = iso(res.result.expires);
       out.renewed.push(r.file);
@@ -175,10 +175,10 @@ async function claim(
     };
   let res;
   try {
-    res = await ctx.client.command(
+    res = await ctx.client.current(
       draft.project,
       { type: "claim", task: task.id, allocation, ttl },
-      (rev) => `claim-${task.id}-r${rev}`,
+      `claim-${task.id}-e${task.epoch}`,
     );
   } catch (e) {
     // A lease only avoids duplicate work; the goal can still be worked on without one.
@@ -509,7 +509,7 @@ export async function done(ctx: VerbContext, file: string | undefined) {
     result = { lease: "already_finished", outcome: a.outcome, spent: a.spent };
   else
     try {
-      await ctx.client.command(
+      await ctx.client.current(
         record.project,
         {
           type: "finish",
@@ -519,8 +519,7 @@ export async function done(ctx: VerbContext, file: string | undefined) {
           outcome,
           ...(note ? { note } : {}),
         },
-        (rev) => `finish-${lease.attempt}-r${rev}`,
-        board,
+        `finish-${lease.attempt}`,
       );
       result = { lease: "finished", outcome, spent };
     } catch (e) {
@@ -561,11 +560,80 @@ export async function note(ctx: VerbContext, ref: string | undefined) {
   }
   const leases =
     w && w.server === ctx.client.origin ? await renew(ctx, w) : undefined;
+  // The same note twice by the same agent is kept once: a rerun after a lost reply replays.
   const key = sha256(`${target.goal}\0${text}`).slice(0, 32);
-  const res = await ctx.client.command(
+  const res = await ctx.client.current(
     target.project,
     { type: "note", goal: target.goal, text },
-    (rev) => `note-${key}-r${rev}`,
+    `note-${key}`,
   );
   return { goal: target.goal, note: res.result, ...leases };
+}
+
+/** Wait for a queued job (the worker may run elsewhere); its result, or its error as a failure. */
+async function waitJob(ctx: VerbContext, project: string, job: string) {
+  const until = ctx.now() + number(ctx, "--timeout", 600) * 1000;
+  for (;;) {
+    const j = await ctx.client.request("GET", path(project, `/jobs/${job}`));
+    if (j.status === "done") return j.result;
+    if (j.status === "failed")
+      throw new MdcError(j.error ?? "job_failed", `job ${job} failed`);
+    if (ctx.now() >= until)
+      throw new MdcError("wait_timeout", `job ${job} is still ${j.status}`);
+    await ctx.sleep(1000);
+  }
+}
+
+/**
+ * Work on refuting a goal (docs/mathdoc.md §2.7.5): register its negation ¬GOAL as a goal if
+ * needed, then pull that goal's file. Proving it with `mdc prove` marks GOAL false.
+ */
+export async function refute(ctx: VerbContext, ref: string | undefined) {
+  if (!ref) throw new MdcError("usage", "mdc refute GOAL");
+  if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
+    throw new MdcError(
+      "usage",
+      "refute needs -p DATABASE/BRANCH (or MDC_PROJECT)",
+    );
+  const [database, projectBranch] = ctx.project.split("/");
+  const branch = ctx.flag("--branch") ?? projectBranch;
+  const board = await liveBoard(ctx.client, database, branch);
+  const goal = await goalOf(ctx.client, board, ref, database, branch);
+  let negation = Object.entries(
+    (board.negations ?? {}) as Record<string, string>,
+  ).find(([, t]) => t === goal)?.[0];
+  if (!negation) {
+    const res = await ctx.client.current(
+      board.id,
+      { type: "negate", goal },
+      `negate-${goal}`,
+    );
+    negation =
+      res.result?.negation ??
+      (await waitJob(ctx, board.id, String(res.job))).negation;
+  }
+  return { refutes: goal, ...(await pull(ctx, negation)) };
+}
+
+/** The goals most worth working on (§2.7.5); with --claim, pull the first one. */
+export async function next(ctx: VerbContext) {
+  if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
+    throw new MdcError(
+      "usage",
+      "next needs -p DATABASE/BRANCH (or MDC_PROJECT)",
+    );
+  const [database, projectBranch] = ctx.project.split("/");
+  const board = await liveBoard(ctx.client, database, projectBranch);
+  const params = new URLSearchParams({
+    limit: String(number(ctx, "--max", 10)),
+  });
+  if (ctx.flag("--branch")) params.set("branch", ctx.flag("--branch")!);
+  const out = await ctx.client.request(
+    "GET",
+    path(board.id, `/next?${params}`),
+  );
+  if (!ctx.has("--claim")) return out;
+  const first = out.candidates[0];
+  if (!first) throw new MdcError("nothing_to_do", "no free goal needs work");
+  return { recommended: first, ...(await pull(ctx, first.goal)) };
 }

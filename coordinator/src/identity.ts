@@ -47,6 +47,7 @@ export const commandScopes: Record<Command["type"], Scope[]> = {
   submit: ["work"],
   resolve: ["work"],
   note: ["work"],
+  negate: ["work"],
   notes: ["work"],
   import: ["work"],
   submit_node: ["work"],

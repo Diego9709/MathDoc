@@ -36,6 +36,8 @@ work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with 
             split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]
             done [FILE] [--spent N] [--outcome O] [--note TEXT]
             note FILE|GOAL -m TEXT     (what was tried, where it got stuck)
+            refute GOAL [pull flags]   (pull the goal's negation; proving it marks GOAL false)
+            next [--branch B] [-n N] [--claim]   (the goals most worth working on; --claim pulls the first)
             mcp [--dir DIR]            (the work commands as MCP tools over stdio)
 tokens:     token new NAME [--scope work,maintain,edit] [--expires 30d|12h|ISO-DATE]
             token list | token revoke NAME   (delegated tokens act as YOU/NAME)
@@ -63,6 +65,7 @@ function parse(argv: string[]) {
     "--dry-run",
     "--again",
     "--no-claim",
+    "--claim",
   ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -119,7 +122,16 @@ function expiry(value: string, now: () => number) {
   return new Date(t).toISOString();
 }
 
-const WORK = new Set(["pull", "prove", "split", "done", "note", "mcp"]);
+const WORK = new Set([
+  "pull",
+  "prove",
+  "split",
+  "done",
+  "note",
+  "refute",
+  "next",
+  "mcp",
+]);
 
 export async function main(
   argv: string[],
@@ -209,6 +221,8 @@ export async function main(
       if (command === "prove") return await verbs.submit(ctx, args[0], "prove");
       if (command === "split") return await verbs.submit(ctx, args[0], "split");
       if (command === "note") return await verbs.note(ctx, args[0]);
+      if (command === "refute") return await verbs.refute(ctx, args[0]);
+      if (command === "next") return await verbs.next(ctx);
       return await verbs.done(ctx, args[0]);
     } catch (e) {
       if (e instanceof MdcError && e.reason === "usage")

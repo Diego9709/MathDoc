@@ -8,8 +8,10 @@ import {
   activeGoals,
   commandSchema,
   stateGoal,
+  addGoal,
+  rankGoals,
 } from "../src/domain.js";
-import { board, fact, projectBoard } from "./fixtures.js";
+import { board, fact, identity, projectBoard } from "./fixtures.js";
 test("shared premises deduplicate, cycles cannot prove themselves, pause only affects selected route", () => {
   const b = board();
   ingest(b, fact("t", "T", ["A", "B"]));
@@ -465,4 +467,142 @@ test("stage 4: a delegated token acts for its person; leases and audit keep the 
   command(b, "alice", { type: "members", members: ["carol"] }, 3);
   assert.equal(b.attempts[a.id].outcome, "revoked");
   assert.equal(b.attempts[c.id].outcome, "revoked");
+});
+test("stage 5: a proved negation refutes its goal; decompositions using it leave routes and their tasks end", () => {
+  const b = projectBoard();
+  const doc = { source: "document" as const };
+  // T ⇐ {A, B} by d1; T ⇐ {C} by d2; B ⇐ {X} by d3. X is reachable only through d1 and d3.
+  ingest(b, fact("d1", "T", ["A", "B"]), doc);
+  ingest(b, fact("d2", "T", ["C"]), doc);
+  ingest(b, fact("d3", "B", ["X"]), doc);
+  ingest(b, fact("c", "C"), doc);
+  b.facts.d1.submitter = "bob/agent-a";
+  const taskOf = (goal: string) =>
+    Object.values(b.tasks).find((t) => t.goal === goal)!;
+  const lease = command(
+    b,
+    "bob",
+    { type: "claim", task: taskOf("X").id, allocation: 2, ttl: 60 },
+    0,
+  ).result as { id: string };
+  // ¬A is registered as goal N and can be claimed; a sketch of it refutes nothing.
+  b.goals.A.proposition = "∀ (n : Nat), n = n + 1";
+  b.goals.A.identity = identity("A");
+  addGoal(b, "N", identity("N"), "not_a");
+  b.negations = { N: "A" };
+  command(
+    b,
+    "bob",
+    { type: "claim", task: taskOf("N").id, allocation: 0, ttl: 60 },
+    0,
+  );
+  ingest(b, fact("n-sketch", "N", ["M"]), doc);
+  assert.equal(b.goals.A.refuted, undefined);
+  // A complete proof of ¬A refutes A.
+  ingest(b, fact("n-proof", "N"), { source: "agent", actor: "carol", at: 9 });
+  assert.deepEqual(b.goals.A.refuted, { certificate: "n-proof", at: 9 });
+  assert.equal(b.facts.d1.state, "refuted");
+  assert.equal(b.facts.d1.refuted_by, "A");
+  assert.equal(b.facts.d2.state, "active");
+  assert.deepEqual(
+    selectRoute(b, {}).root,
+    "d2",
+    "routes avoid the refuted decomposition",
+  );
+  assert.throws(() => selectRoute(b, { T: "d1" }), /no_active_route/);
+  // A and what only d1 reached (B, X) are cancelled; T and C stay; X's lease ends, charged.
+  for (const g of ["A", "B", "X"])
+    assert.equal(taskOf(g).state, "cancelled", g);
+  for (const g of ["T", "C"]) assert.notEqual(taskOf(g).state, "cancelled", g);
+  assert.equal(b.attempts[lease.id].outcome, "cancelled");
+  assert.equal(b.attempts[lease.id].spent, 2);
+  assert.throws(
+    () =>
+      command(
+        b,
+        "alice",
+        { type: "decomposition", certificate: "d1", state: "active" },
+        10,
+      ),
+    /certificate_refuted/,
+  );
+  // Whoever submitted the refuted decomposition finds why on its goal.
+  assert.match(
+    b.goals.T.notes!.at(-1)!.text,
+    /d1 by bob\/agent-a is refuted: its premise .* is false/,
+  );
+  assert.match(b.goals.A.notes!.at(-1)!.text, /Refuted: certificate n-proof/);
+  // negate needs a stated goal and answers with the known negation.
+  assert.deepEqual(
+    command(b, "bob", { type: "negate", goal: "A" }, 11).result,
+    {
+      goal: "A",
+      negation: "N",
+    },
+  );
+  assert.throws(
+    () => command(b, "bob", { type: "negate", goal: "C" }, 11),
+    /goal_unresolved/,
+  );
+});
+test("stage 5: next recommends the frontier of the routes, closest routes and fewest failures first", () => {
+  // Handwritten: main picks T ⇐ {Q, B}; alt picks T ⇐ {B, C, D}; third picks T ⇐ {C}.
+  // Unsolved goals: main {T, Q, B} (each 1/3), alt {T, B, C, D} (1/4), third {T, C} (1/2).
+  // C failed once. By hand: B = 1/3 + 1/4 ≈ 0.58; C = (1/4 + 1/2) / 2 ≈ 0.38; Q = 1/3;
+  // D = 1/4. T has active decompositions, so it is not on the frontier.
+  const b = projectBoard();
+  const doc = { source: "document" as const };
+  ingest(b, fact("d1", "T", ["Q", "B"]), doc);
+  ingest(b, fact("d2", "T", ["B", "C", "D"]), doc);
+  ingest(b, fact("d3", "T", ["C"]), doc);
+  b.branches!.main.picks = { T: "d1" };
+  b.branches!.alt = structuredClone(b.branches!.main);
+  b.branches!.alt.picks = { T: "d2" };
+  b.branches!.third = structuredClone(b.branches!.main);
+  b.branches!.third.picks = { T: "d3" };
+  const taskOf = (goal: string) =>
+    Object.values(b.tasks).find((t) => t.goal === goal)!;
+  const a = command(
+    b,
+    "bob",
+    { type: "claim", task: taskOf("C").id, allocation: 0, ttl: 60 },
+    0,
+  ).result as { id: string; epoch: number };
+  command(
+    b,
+    "bob",
+    {
+      type: "finish",
+      attempt: a.id,
+      epoch: a.epoch,
+      spent: 0,
+      outcome: "no_progress",
+    },
+    1,
+  );
+  const ranked = rankGoals(b);
+  assert.deepEqual(
+    ranked.map((c) => c.goal),
+    ["B", "C", "Q", "D"],
+  );
+  assert.deepEqual(ranked[0].branches.sort(), ["alt", "main"]);
+  assert.equal(ranked[0].score, Math.round((1 / 3 + 1 / 4) * 1e6) / 1e6);
+  assert.equal(ranked[1].failures, 1);
+  // One branch's view; a leased task and a proved goal drop out; a proved lemma shortens routes.
+  assert.deepEqual(
+    rankGoals(b, "main").map((c) => c.goal),
+    ["B", "Q"],
+  );
+  command(
+    b,
+    "bob",
+    { type: "claim", task: taskOf("Q").id, allocation: 0, ttl: 60 },
+    2,
+  );
+  ingest(b, fact("b", "B"), doc);
+  // alt {T, C, D} (1/3 each), third {T, C} (1/2): C = (1/3 + 1/2) / 2 ≈ 0.42, D = 1/3.
+  assert.deepEqual(
+    rankGoals(b).map((c) => c.goal),
+    ["C", "D"],
+  );
 });
