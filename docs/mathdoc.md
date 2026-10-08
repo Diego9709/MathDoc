@@ -248,7 +248,9 @@ Project（= 一个 TerminusDB 数据库）
    看板上的声明合并了 §2.7.2 原计划的第二、三种来源：它取自引入该目标的草图占位，或任一分支上陈述该目标的节点，先记下的保留。
 5. **定义 ID 的来源**：目标上只记录 LeanGround 报告的定义 ID，即 `resolve` 响应中被陈述引用的定义、本项目认证的 `definitions`、
    本项目节点登记的定义；不记录请求里给出的定义 ID。原因：目标草稿返回定义源码，而 GoalKey 不受未引用定义的影响，
-   如果照抄请求里的 ID，成员就能借一个 `resolve` 读到协调服务可见、但属于其他项目的定义源码 [推断：读 LeanGround `fact_components.py:93-97`]。
+   如果照抄请求里的 ID，成员就能借一个 `resolve` 读到协调服务可见、但属于其他项目的定义源码。GoalKey 只取被引用的定义
+   [实测：读 LeanGround `fact_components.py:93-97`]；这个风险也在本机 LeanGround 上复现过：把代码改回照抄请求 ID 后，
+   另一个项目的定义 ID 被 `resolve` 接受并记到了目标上 [实测，2026-10-08，§3.4]。
 6. **自动陈述失败的处理**：LeanGround 拒绝或 GoalKey 不一致，只记在作业结果上；LeanGround 暂时不可用时，整个 `submit` 作业重试，
    重试会再提交一次同样的源码。
 7. **工作文件前段的上下文顺序**改为 LeanGround 构造检查前言的实际顺序（§4.11），修正原规范中未核实的写法。
@@ -262,8 +264,8 @@ Project（= 一个 TerminusDB 数据库）
 
 | 阶段 | 内容 | 验收 | 状态 |
 |---|---|---|---|
-| 1 共享看板 | 环境和看板改为按数据库；分支是路线；节点状态按 GoalKey 读共享看板；旧请求只读 | 两个分支选不同的根拆法、共用引理 B：一个分支证出 B 后，另一分支的 B 节点同时显示已证出，不需要导入；旧请求可读、拒绝命令 | 已实现，待评审（§3.3） |
-| 2 `mdc` 动词层 | `pull / split / prove / done`、`.mdc/` 重放、自动续租、服务端按目标生成草稿、自动 `resolve`；`check` 等 LeanGround 接口 | 断网重试不重复提交；一个 Agent 只用这四个动词就能把一个目标拆开并证完 | 已实现，待评审（§3.4）；未在真实 LeanGround 上运行 |
+| 1 共享看板 | 环境和看板改为按数据库；分支是路线；节点状态按 GoalKey 读共享看板；旧请求只读 | 两个分支选不同的根拆法、共用引理 B：一个分支证出 B 后，另一分支的 B 节点同时显示已证出，不需要导入；旧请求可读、拒绝命令 | 已实现，待评审；本机 LeanGround 上的验收测试通过（§3.3） |
+| 2 `mdc` 动词层 | `pull / split / prove / done`、`.mdc/` 重放、自动续租、服务端按目标生成草稿、自动 `resolve`；`check` 等 LeanGround 接口 | 断网重试不重复提交；一个 Agent 只用这四个动词就能把一个目标拆开并证完 | 已实现，待评审；本机 LeanGround 上的验收测试通过（§3.4） |
 | 3 审阅 | `proposed` 状态、审阅视图、尝试笔记 | `proposed` 的拆法不产生可领取的任务，启用后才产生 | 未开始 |
 | 4 Agent 身份 | 委托子令牌、`mdc mcp` | 两个命令行 Agent 各用自己的子令牌：审计记录可以区分，子令牌无法执行维护者命令 | 未开始 |
 | 5 规模与证否 | 看板拆表、证否、`mdc next` 调度 | 参与者数、目标数和写入延迟的目标值在本阶段开始前定下 | 未开始 |
@@ -279,6 +281,7 @@ Project（= 一个 TerminusDB 数据库）
 
 2026-10-08 开始阶段 2 时，这两项都没有完成：没有 LeanGround 令牌，所以阶段 1 的真实验收没有运行；那组改动仍未提交，
 其中也改了 `coordinator/src/http.ts`。所以阶段 2 在单独的工作树和分支 `claude/mdc-verbs` 上开发（§3.5），主工作区保持原样。
+同日阶段 2 合并之后，用本机 LeanGround 服务补跑了阶段 1 的三项真实验收，全部通过（§3.3）；那组改动仍未提交。
 
 #### 2.7.2 阶段 2：`mdc` 动词层
 
@@ -429,8 +432,8 @@ Project（= 一个 TerminusDB 数据库）
 | 迁移阶段 4：协作视图与闭环 | 已实现，待评审 | 2026-09-29 | `ba02fef` |
 | 迁移阶段 5：切换默认入口、删除 Rust 应用 | 已实现，待评审 | 2026-09-29 | `d8abcb9`、`cc8ef1f`（合并 `main`） |
 | Project 模型与工作文件规范（设计） | 已决定 A–F、G1–G4 | 2026-10-01/02 | `d7a1ff3`、`cb850d2` |
-| 项目阶段 1：共享看板 | 已实现，待评审 | 2026-10-02 | `dc2f143`、`3a1c668`、`99060b4`、`2d9fa39` |
-| 项目阶段 2：`mdc` 动词层 | 已实现，待评审；未在真实 LeanGround 上运行 | 2026-10-08 | `ce42e5a`（计划）、`c163316`、`9cb1914`、`23bfa05` |
+| 项目阶段 1：共享看板 | 已实现，待评审；本机 LeanGround 上验收测试通过（2026-10-08） | 2026-10-02 | `dc2f143`、`3a1c668`、`99060b4`、`2d9fa39` |
+| 项目阶段 2：`mdc` 动词层 | 已实现，待评审；本机 LeanGround 上验收测试通过 | 2026-10-08 | `ce42e5a`（计划）、`c163316`、`9cb1914`、`23bfa05` |
 | 项目阶段 3–5 | 未开始 | — | — |
 
 「待评审」的意思是：作者已按验收标准自测，还没有经过维护者评审，也没有在真实部署上验收。
@@ -526,8 +529,16 @@ Project（= 一个 TerminusDB 数据库）
 - 提交弹窗的文字加长后被面板裁切；
 - 共享的目标状态会被误读成本分支的路线状态，因此新增了 Route 列。
 
-**未运行**：`scenario.test.ts`、`mathlib.test.ts`、浏览器 e2e 的协作用例，三者都需要 LeanGround 令牌。
-所以阶段 1 只能算「待评审」，还不是「已验收」。
+**真实 LeanGround 上的验收**（2026-10-08 补跑）：当时 `scenario.test.ts`、`mathlib.test.ts`、浏览器 e2e 的协作用例都需要
+LeanGround 令牌，没有运行。2026-10-08 在阶段 2 合并后的代码上补跑 [实测，各 n = 1]：
+
+- 条件：本机开发用的 LeanGround 服务（`127.0.0.1:8765`，提交 `3965273`；基座 1 的根模块是 Mathlib，Lean 4.33.1），
+  令牌的操作者不是 `coordinator`，所以测试工具新增 `MDC_TEST_LEANGROUND_ACTOR`（§4.12）；PostgreSQL 与 TerminusDB 同上。
+- 协调层全套 47 项全部通过、0 项跳过，共 54 秒。其中迁移阶段 4 的完整场景 `scenario` 37.5 秒（大部分在等租约过期），
+  `mathlib`（`MDC_TEST_MATHLIB_BASE_KEY=1`）3.4 秒。
+- 浏览器 e2e 的协作用例（Chromium，只运行这一项）19.4 秒通过：在界面里提交 Lean 节点、组装、回写。
+
+所以 §2.7.1 要求的三项真实验收都已通过；但这是本机服务上的单次运行，不是生产部署，阶段 1 仍是「待评审」，没有经过维护者评审。
 
 ### 3.4 项目阶段 2 的要点
 
@@ -561,6 +572,7 @@ Project（= 一个 TerminusDB 数据库）
   2. 请求没有到达，之后修订号前进。
 - 续租：把客户端时钟拨快 70 秒（租约 120 秒，剩余不足一半），再运行一个会被本地拒绝的 `prove`。
 - 变异检验：逐个改坏 8 处实现，看测试能否失败。
+- 合并之后，在本机 LeanGround 服务上运行同一测试的第二项（条件见 §3.3），并对「照抄请求里的定义 ID」再做一次变异检验。
 
 **结果** [实测，2026-10-08]：
 
@@ -577,20 +589,29 @@ Project（= 一个 TerminusDB 数据库）
   G1 不删前提、不核对前段哈希、不续租、重新吸收时丢失说明、照抄请求里的定义 ID。所以这些测试能发现对应的回归。
   第一次检验时「丢失说明」没有被发现，因此补了 `domain` 测试。
 - 构建出的 `mdc`（`dist/cli.js`）：失败时退出码 1，stderr 为一行 JSON；用法错误退出码 2。文档站 `astro check` 0 错误，构建通过。
+- 本机 LeanGround（Mathlib 基座）：同一流程通过 2 次（单独运行 3.5 秒，全套中 4.0 秒）。子目标的作业结果同样是 `statement: resolved`，
+  所以草图占位写成 `∀ binders, type` 再解析，得到的 GoalKey 与认证里该前提的 GoalKey 相同；两种重放同样各只产生一个提交作业；
+  组装得到 `certified`。改回「照抄请求里的定义 ID」后测试失败，而且 LeanGround 接受了另一个项目的定义 ID，
+  所以 §2.6 项目阶段 2 决定 5 防的是实际存在的泄露路径。
 
 过程中修正的问题：
 
 - 续租原先放在本地校验之后，文件被本地拒绝时不续租；
 - 续租原先在客户端时钟显示过期时直接放弃租约，客户端时钟偏快时会误丢租约；
 - 目标上原先照抄请求里的定义 ID，可能泄露其他项目的定义源码（§2.6 项目阶段 2 决定 5）。
+- 在本机 LeanGround 上首次运行时，测试有两处只对替身成立的假设：写死了 `import Init`（实际基座是 Mathlib）；
+  用编造的定义 ID 检查来源规则，替身会把它滤掉，LeanGround 则以 `unknown_definition` 拒绝。现在改为读基座的根模块，
+  并另建一个项目登记真实的定义，用它的 ID 做检查。
 
-**结论**：在替身上，阶段 2 的两条验收标准成立。由于替身不检查 Lean、也不按 LeanGround 的规则计算 GoalKey，
-「自动陈述得到相同的 GoalKey」这一点只在替身的规则下成立，在真实 LeanGround 上仍需验证。
+**结论**：阶段 2 的两条验收标准在替身上和本机 LeanGround（Mathlib 基座）上都成立；「自动陈述得到相同的 GoalKey」
+也在本机 LeanGround 上得到确认。真实环境的证据只有 2 次运行、一个简单的例子（`double n = n + n`），
+带隐式参数、类型类参数或宇宙参数的占位还没有覆盖。
 
 **未覆盖**：
 
-- 真实 LeanGround 上的同一流程（`verbs.test.ts` 第二项，需要 `MDC_TEST_LEANGROUND_URL/TOKEN`）。其中最需要验证的是：
-  草图占位的 `∀ binders, type` 写法在 LeanGround 上解析出的 GoalKey，是否等于认证里该前提的 GoalKey。
+- 占位签名更复杂时（隐式参数 `{}`、类型类参数 `[]`、宇宙参数、自动绑定的隐式变量），`∀ binders, type` 是否仍解析出相同的 GoalKey，
+  没有在 LeanGround 上验证；不一致时作业结果记 `identity_mismatch`，该子目标需要手工 `resolve`。
+- 生产部署上没有运行。
 - 前提、定义的「是否被引用」按标识符文本判断，没有经过 elaboration，可能误判；误判由服务端拦下（多留占位得到
   `subgoal_unused`，漏报定义得到 `definition_not_registered`），不会产生错误的认证 [推断]。
 - `mdc check`、`goals`、`next`、`show`、`note` 不在本阶段；尝试笔记在草稿中恒为空（阶段 3）。
@@ -966,16 +987,20 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `verbs` | PostgreSQL、TerminusDB；第二项另需真实 LeanGround | 项目阶段 2 验收：四个动词走完拆开与证完、两种重放、续租；第一项用替身 |
 | `cli` | PostgreSQL、TerminusDB，以及配置好的 LeanGround 变量（不调用证明命令） | `mdc` 文档命令 |
 | `scenario`、`mathlib` | 再加真实 LeanGround（`MDC_TEST_LEANGROUND_URL/TOKEN`；`mathlib` 另需 Mathlib 基座的 key） | 完整协作场景 |
+| `verbs` 第二项 | 同上 | 阶段 2 的同一流程在真实 LeanGround 上运行 |
 | `web` vitest、svelte-check、`web/e2e` | e2e 需要 TerminusDB、PostgreSQL，协作用例需要 LeanGround | 界面 |
 
-测试的环境变量：`MDC_TEST_DATABASE_URL`、`MDC_TEST_TERMINUS_URL`、`MDC_TEST_TERMINUS_PASSWORD`。
+测试的环境变量：`MDC_TEST_DATABASE_URL`、`MDC_TEST_TERMINUS_URL`、`MDC_TEST_TERMINUS_PASSWORD`；真实 LeanGround 另需
+`MDC_TEST_LEANGROUND_URL`、`MDC_TEST_LEANGROUND_TOKEN`，令牌的操作者不是 `coordinator` 时设 `MDC_TEST_LEANGROUND_ACTOR`
+（协调服务把这个操作者登记为每个 LeanGround 项目的成员）。浏览器 e2e 用的是 `LEANGROUND_SERVER_URL`、`LEANGROUND_FACT_TOKEN`、
+`LEANGROUND_ACTOR`。
 每个测试使用独立的 PostgreSQL schema 和 TerminusDB 数据库。
 
 ## 5. 未覆盖与待定
 
 **真实环境**：
 
-- 项目阶段 1、阶段 2 都没有在真实 LeanGround 上运行（§3.3、§3.4）；
+- 项目阶段 1、2 的真实 LeanGround 测试只在本机开发用的 LeanGround 服务上各运行过 1–2 次（§3.3、§3.4）；
 - 整个协作应用没有在生产 TerminusDB 和生产 LeanGround 上部署验收；
 - 新 CI 没有在 GitHub 上运行过；
 - 本机没有真实的 MathDoc 文档库，Mathlib 统计与手写文档只是替代。
