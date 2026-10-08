@@ -13,9 +13,13 @@ import {
   recompute,
   requireThat,
   expire,
+  stateGoal,
+  type Declaration,
+  type Identity,
 } from "./domain.js";
 import type { Terminus } from "./docs/terminus.js";
 import { baseRefSchema } from "./contracts.js";
+import { proposition, scan } from "./lean-source.js";
 import { DocError } from "./docs/names.js";
 import type { Snapshot } from "./docs/graph.js";
 import {
@@ -122,6 +126,18 @@ export class Worker {
     proposition: string,
     definitions: string[],
   ) {
+    return (await this.resolveStatement(b, proposition, definitions)).identity;
+  }
+  /**
+   * Resolve a proposition; `definitions` are the IDs LeanGround reports the statement to
+   * reference. Only such IDs are recorded on goals: goal drafts return their source, so IDs
+   * taken from a request could disclose another project's definitions.
+   */
+  private async resolveStatement(
+    b: Board,
+    proposition: string,
+    definitions: string[],
+  ) {
     const resolved = await this.lean.fact("resolve", {
       base: b.base,
       proposition,
@@ -129,12 +145,92 @@ export class Worker {
       options: b.options,
       definitions,
     });
-    return identitySchema.parse(resolved.goal_key);
+    return {
+      identity: identitySchema.parse(resolved.goal_key),
+      definitions: z.array(z.string()).catch([]).parse(resolved.definitions),
+    };
   }
   private definitionIds(c: Conversion, id: string) {
     return (c.bindings[id].definition_nodes ?? []).flatMap(
       (d) => c.bindings[d].definition_ids ?? [],
     );
+  }
+  /** How a converted theorem node states its goal (recorded on the board for goal drafts). */
+  private nodeStatement(c: Conversion, id: string) {
+    const d = c.converted.get(id)!.decl!;
+    return {
+      proposition: conclusionProposition(c, id),
+      definitions: this.definitionIds(c, id),
+      declaration: { name: d.name, binders: d.binders ?? "", type: d.type! },
+    };
+  }
+  /**
+   * docs/mathdoc.md §2.7.2: state the premises of a submitted sketch. LeanGround binds each
+   * placeholder name to its GoalKey but returns only the key, so a premise whose identity the
+   * board does not know is resolved from its placeholder declaration with the certificate's
+   * definitions. A different key is recorded on the job, never guessed; an outage retries.
+   */
+  private async statePremises(
+    b: Board,
+    cert: Record<string, any>,
+    source: string,
+  ) {
+    const bindings = z
+      .array(z.object({ name: z.string(), role: z.string(), goal: z.string() }))
+      .catch([])
+      .parse(cert.bindings);
+    // A certificate lists the definitions it uses only when there are some.
+    const definitions = z
+      .array(z.string())
+      .catch([])
+      .parse(cert.definitions ?? []);
+    const decls = scan(source).decls;
+    const out: {
+      goal: string;
+      name: string | null;
+      new: boolean;
+      statement: string;
+      identity?: Identity;
+      declaration?: Declaration;
+      definitions?: string[];
+    }[] = [];
+    for (const key of new Set(z.array(z.string()).parse(cert.premises))) {
+      const name =
+        bindings.find((x) => x.role === "premise" && x.goal === key)?.name ??
+        null;
+      const entry: (typeof out)[number] = {
+        goal: key,
+        name,
+        new: !Object.hasOwn(b.goals, key),
+        statement: "placeholder_not_found",
+      };
+      out.push(entry);
+      const d = decls.find(
+        (x) => x.name === name && (x.kind === "theorem" || x.kind === "lemma"),
+      );
+      if (!d?.type) continue;
+      entry.declaration = {
+        name: d.name,
+        binders: d.binders ?? "",
+        type: d.type,
+      };
+      if (b.goals[key]?.identity) {
+        entry.statement = "known";
+        continue;
+      }
+      try {
+        const r = await this.resolveStatement(b, proposition(d), definitions);
+        if (r.identity.key === key) {
+          entry.identity = r.identity;
+          entry.definitions = r.definitions;
+          entry.statement = "resolved";
+        } else entry.statement = "identity_mismatch";
+      } catch (e) {
+        if (!(e instanceof RemoteError) || e.retryable) throw e;
+        entry.statement = e.code;
+      }
+    }
+    return { premises: out, definitions };
   }
   /** Submit one converted theorem node; returns the certificate or undefined. */
   private async submitNode(
@@ -310,13 +406,15 @@ export class Worker {
       addGoal(b, b.root, root, b.title);
     }
     requireThat(b.root === root.key, "root_statement_differs");
-    for (const [id, goal] of Object.entries(bound.goals))
+    for (const [id, goal] of Object.entries(bound.goals)) {
       addGoal(
         b,
         String(goal.key),
         identitySchema.parse(goal),
         bound.c.bindings[id].title,
       );
+      stateGoal(b, String(goal.key), this.nodeStatement(bound.c, id));
+    }
     Object.assign(branch.request, {
       bound: true,
       contract: bound.contract,
@@ -448,13 +546,15 @@ export class Worker {
         await this.store.checkpoint(
           j,
           (b) => {
-            if (goals[id])
+            if (goals[id]) {
               addGoal(
                 b,
                 String(goals[id].key),
                 identitySchema.parse(goals[id]),
                 binding.title,
               );
+              stateGoal(b, String(goals[id].key), this.nodeStatement(c, id));
+            }
             const branch = attached(b, name);
             branch.nodes = { ...branch.nodes, [id]: binding };
             if (cert) ingest(b, cert);
@@ -465,15 +565,22 @@ export class Worker {
         return;
       }
       case "resolve": {
-        const goal = await this.resolveGoal(
+        const r = await this.resolveStatement(
           b,
           String(j.payload.proposition),
           (j.payload.definitions as string[] | undefined) ?? [],
         );
+        const goal = r.identity;
         requireThat(goal.key === j.payload.goal, "identity_mismatch");
         await this.store.checkpoint(
           j,
-          (b) => addGoal(b, goal.key, goal, String(j.payload.proposition)),
+          (b) => {
+            addGoal(b, goal.key, goal, String(j.payload.proposition));
+            stateGoal(b, goal.key, {
+              proposition: String(j.payload.proposition),
+              definitions: r.definitions,
+            });
+          },
           true,
         );
         return;
@@ -503,7 +610,41 @@ export class Worker {
               : {}),
           },
         });
-        await this.store.checkpoint(j, (b) => ingest(b, cert), true);
+        const stated = await this.statePremises(b, cert, String(p.source));
+        const description =
+          typeof p.description === "string" ? p.description : undefined;
+        await this.store.checkpoint(
+          j,
+          (b) => {
+            ingest(b, cert);
+            const fact = b.facts[String(cert.id)];
+            if (description && !fact.description)
+              fact.description = description;
+            for (const s of stated.premises) {
+              if (s.identity) addGoal(b, s.goal, s.identity);
+              if (s.declaration)
+                stateGoal(b, s.goal, {
+                  proposition: proposition(s.declaration),
+                  definitions: s.definitions ?? stated.definitions,
+                  declaration: s.declaration,
+                });
+            }
+          },
+          true,
+          {
+            certificate: cert.id,
+            goal: cert.goal,
+            mode: p.mode,
+            premises: stated.premises.map(
+              ({ goal, name, new: fresh, statement }) => ({
+                goal,
+                name,
+                new: fresh,
+                statement,
+              }),
+            ),
+          },
+        );
         return;
       }
       case "import": {

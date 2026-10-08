@@ -261,11 +261,13 @@ export function scan(source: string): Scan {
 }
 
 /** The proposition LeanGround resolves for a theorem: binders become a ∀. */
-export function proposition(d: Decl): string {
+export function proposition(d: Pick<Decl, "binders" | "type">): string {
   return d.binders ? `∀ ${d.binders}, ${d.type}` : d.type!;
 }
 /** A premise placeholder with the same statement, on one line. */
-export function placeholder(d: Decl): string {
+export function placeholder(
+  d: Pick<Decl, "name" | "binders" | "type">,
+): string {
   return `theorem ${d.name}${d.binders ? ` ${d.binders}` : ""} : ${d.type} := sorry\n`;
 }
 /** The declarations only: imports and context commands removed. */

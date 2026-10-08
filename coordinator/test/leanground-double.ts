@@ -55,9 +55,17 @@ export async function leangroundDouble(port = 0) {
       case "project":
         return { status: 200, body: { id: body.id } };
       case "resolve":
+        // LeanGround reports the registered definitions the statement references; the
+        // double approximates that by name.
         return {
           status: 200,
-          body: { goal_key: identity(body.proposition, body) },
+          body: {
+            goal_key: identity(body.proposition, body),
+            definitions: (body.definitions ?? []).filter((id: string) => {
+              const d = definitions.get(id);
+              return d && new RegExp(`\\b${d.name}\\b`).test(body.proposition);
+            }),
+          },
         };
       case "define": {
         const out = scan(body.request.source).decls.map((d) => {

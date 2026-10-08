@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS mdc_command(project text NOT NULL REFERENCES mdc_proj
 CREATE TABLE IF NOT EXISTS mdc_event(sequence bigserial PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, revision bigint NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS mdc_job(id text PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL DEFAULT 'queued', epoch integer NOT NULL DEFAULT 0, tries integer NOT NULL DEFAULT 0, expires timestamptz, available_at timestamptz NOT NULL DEFAULT now(), error text, created_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS mdc_job_queue ON mdc_job(status,available_at);
+ALTER TABLE mdc_job ADD COLUMN IF NOT EXISTS result jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS mdc_project_scope ON mdc_project((body->'project'->>'database'),(body->'project'->>'environment_id'));
 ${ENVIRONMENT_MIGRATION}`;
 // Boards that take part in scheduling: not a stage 4 proof request, not superseded.
@@ -323,7 +324,13 @@ export class Store {
       ).rowCount === 1
     );
   }
-  async checkpoint(j: Job, fn: (b: Board) => void, done = false) {
+  /** Apply `fn` to the board under the job's claim; `done` ends the job with `result`. */
+  async checkpoint(
+    j: Job,
+    fn: (b: Board) => void,
+    done = false,
+    result?: unknown,
+  ) {
     await this.transaction(async (c) => {
       const lock = (
         await c.query(
@@ -342,8 +349,8 @@ export class Store {
       await this.save(c, b, j.actor, `job:${j.kind}`);
       if (done)
         await c.query(
-          "UPDATE mdc_job SET status='done',expires=NULL,error=NULL WHERE id=$1",
-          [j.id],
+          "UPDATE mdc_job SET status='done',expires=NULL,error=NULL,result=$2 WHERE id=$1",
+          [j.id, result ?? null],
         );
     });
   }
@@ -393,10 +400,21 @@ export class Store {
     await this.get(id, actor);
     return (
       await this.pool.query(
-        "SELECT id,actor,kind,status,tries,error,created_at FROM mdc_job WHERE project=$1 ORDER BY created_at DESC LIMIT 100",
+        "SELECT id,actor,kind,status,tries,error,result,created_at FROM mdc_job WHERE project=$1 ORDER BY created_at DESC LIMIT 100",
         [id],
       )
     ).rows;
+  }
+  async job(id: string, actor: string, job: string) {
+    await this.get(id, actor);
+    const row = (
+      await this.pool.query(
+        "SELECT id,actor,kind,status,tries,error,result,created_at FROM mdc_job WHERE project=$1 AND id=$2",
+        [id, job],
+      )
+    ).rows[0];
+    requireThat(row, "not_found", 404);
+    return row;
   }
   async history(id: string, actor: string) {
     await this.get(id, actor);

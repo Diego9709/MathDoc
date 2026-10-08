@@ -22,6 +22,7 @@ import {
   type Board,
 } from "./domain.js";
 import { fetchBase, resolveProject } from "./worker.js";
+import { goalDraft } from "./goal-draft.js";
 import { DocsBackend } from "./docs/routes.js";
 import { DocError } from "./docs/names.js";
 import type { Action } from "./docs/workspace.js";
@@ -381,7 +382,7 @@ export function server(
         return;
       }
       const match =
-        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
+        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
           path,
         );
       requireThat(match, "not_found", 404);
@@ -431,6 +432,38 @@ export function server(
         });
         return;
       }
+      if (operation === "goals" && child && draft && method === "GET") {
+        // docs/mathdoc.md §2.7.2: the material of a goal file (`mdc pull`), for any goal.
+        requireThat(b.project, "not_a_project_board", 400);
+        const name = url.searchParams.get("branch") ?? undefined;
+        if (name !== undefined) {
+          bindingSchema.shape.branch.parse(name);
+          if (!(await canRead(actor, b.project.database, name)))
+            throw new Fault("not_found", 404);
+        }
+        const extra = (url.searchParams.get("with") ?? "")
+          .split(",")
+          .filter(Boolean);
+        requireThat(extra.length <= 100, "too_many_premises", 400);
+        const database = b.project.database;
+        send(
+          res,
+          200,
+          await goalDraft({
+            board: b,
+            goal: child,
+            branch: name,
+            with: extra,
+            snapshot: async (branch) => {
+              requireThat(documents, "documents_not_configured", 503);
+              return documents.terminus.database(database, branch).load();
+            },
+            definition: (id) =>
+              lean.fact("read", { kind: "definition", id, source: true }),
+          }),
+        );
+        return;
+      }
       if (!operation && method === "GET") {
         send(res, 200, await visible(actor, b));
         return;
@@ -466,6 +499,10 @@ export function server(
           200,
           await store.apply(id, actor, revision(req), key(req), input),
         );
+        return;
+      }
+      if (operation === "jobs" && child && method === "GET") {
+        send(res, 200, await store.job(id, actor, child));
         return;
       }
       if (operation === "jobs" && method === "GET") {

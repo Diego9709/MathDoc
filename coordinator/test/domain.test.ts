@@ -7,6 +7,7 @@ import {
   expire,
   activeGoals,
   commandSchema,
+  stateGoal,
 } from "../src/domain.js";
 import { board, fact, projectBoard } from "./fixtures.js";
 test("shared premises deduplicate, cycles cannot prove themselves, pause only affects selected route", () => {
@@ -235,4 +236,35 @@ test("project boards: attach adds the branch; stage 4 requests and superseded bo
   );
   // A free-standing board (no document binding) is unaffected.
   command(board(), "alice", { type: "notes", notes: "x" }, 0);
+});
+test("a decomposition's description and a goal's first statement survive re-ingestion", () => {
+  const b = board();
+  ingest(b, fact("t", "T", ["A"]));
+  b.facts.t.description = "split T at A";
+  b.facts.t.state = "paused";
+  // Every sync re-ingests every known certificate.
+  ingest(b, fact("t", "T", ["A"]));
+  assert.equal(b.facts.t.description, "split T at A");
+  assert.equal(b.facts.t.state, "paused");
+  const declaration = { name: "a_lemma", binders: "(n : Nat)", type: "n = n" };
+  stateGoal(b, "A", {
+    proposition: "∀ (n : Nat), n = n",
+    definitions: ["d2"],
+    declaration,
+  });
+  stateGoal(b, "A", {
+    proposition: "∀ (m : Nat), m = m",
+    definitions: ["d1"],
+    declaration: { ...declaration, name: "other" },
+  });
+  assert.equal(b.goals.A.proposition, "∀ (n : Nat), n = n");
+  assert.deepEqual(b.goals.A.definitions, ["d1", "d2"]);
+  assert.equal(b.goals.A.declaration!.name, "a_lemma");
+  assert.equal(
+    b.goals.A.statement,
+    "a_lemma",
+    "a goal known only by key gets a label",
+  );
+  stateGoal(b, "missing", { proposition: "True", definitions: [] });
+  assert.ok(!Object.hasOwn(b.goals, "missing"));
 });

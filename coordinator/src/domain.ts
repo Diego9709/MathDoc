@@ -83,8 +83,23 @@ export type DocumentCreate = z.infer<typeof documentCreateSchema>;
 export interface Goal {
   key: string;
   identity?: Identity;
+  /** A display label: a node title, a placeholder name or the proposition. */
   statement: string;
   status: "insufficient" | "derivable" | "certified";
+  /**
+   * The goal's statement as resolved (docs/mathdoc.md §4.11): the proposition, the definition
+   * IDs it was resolved with and, when a node or a sketch placeholder states it, that
+   * declaration. Goal drafts are written from it.
+   */
+  proposition?: string;
+  definitions?: string[];
+  declaration?: Declaration;
+}
+/** A theorem's name and signature, as `theorem name binders : type`. */
+export interface Declaration {
+  name: string;
+  binders: string;
+  type: string;
 }
 export interface Fact {
   id: string;
@@ -93,6 +108,8 @@ export interface Fact {
   trust: Trust;
   state: "active" | "paused" | "retired";
   available: boolean;
+  /** What a decomposition does, from `submit` (`mdc split -m`). */
+  description?: string;
 }
 export interface Task {
   id: string;
@@ -345,6 +362,31 @@ export function addGoal(
     if (statement) b.goals[key].statement = statement;
   }
 }
+/**
+ * Record how a goal is stated. Every statement resolved to this key means the same goal, so
+ * the first proposition and declaration stay; definition IDs accumulate (a GoalKey depends
+ * only on the definitions its statement references, which every list that elaborates it holds).
+ */
+export function stateGoal(
+  b: Board,
+  key: string,
+  statement: {
+    proposition: string;
+    definitions: string[];
+    declaration?: Declaration;
+  },
+) {
+  if (!Object.hasOwn(b.goals, key)) return;
+  const g = b.goals[key];
+  g.proposition ??= statement.proposition;
+  g.definitions = [
+    ...new Set([...(g.definitions ?? []), ...statement.definitions]),
+  ].sort();
+  if (!g.declaration && statement.declaration)
+    g.declaration = { ...statement.declaration };
+  if (!g.statement && statement.declaration)
+    g.statement = statement.declaration.name;
+}
 export const factSchema = z
   .object({
     id: z.string().min(1),
@@ -385,13 +427,15 @@ export function ingest(b: Board, raw: unknown) {
     !["__proto__", "constructor", "prototype"].includes(f.id),
     "invalid_fact",
   );
+  const prior = b.facts[f.id];
   b.facts[f.id] = {
     id: f.id,
     goal: f.goal,
     premises: [...new Set(f.premises)],
     trust: f.trust,
-    state: b.facts[f.id]?.state ?? "active",
+    state: prior?.state ?? "active",
     available: true,
+    ...(prior?.description ? { description: prior.description } : {}),
   };
   recompute(b);
 }
@@ -562,6 +606,8 @@ export const commandSchema = z.discriminatedUnion("type", [
       mode: z.enum(["leaf", "sketch"]),
       definitions: z.array(short).max(1000).default([]),
       new_definitions: z.array(short).max(100).default([]),
+      // A decomposition's purpose, kept on the certificate for review (§2.7.2).
+      description: z.string().trim().min(1).max(2000).optional(),
     })
     .strict(),
   z
