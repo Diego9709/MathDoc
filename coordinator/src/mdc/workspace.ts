@@ -36,6 +36,8 @@ export interface Submission {
   at: string;
   job?: string;
   certificate?: string;
+  /** The certificate's state on the board: `proposed` awaits the owner's review. */
+  state?: string;
   reason?: string;
   premises?: unknown[];
 }

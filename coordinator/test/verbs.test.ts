@@ -178,6 +178,23 @@ async function flow(leanground: { url: string; token: string }) {
     assert.ok(p.goals[sub.goal].identity, "the subgoal can take a proof");
     assert.equal(p.goals[sub.goal].declaration!.name, "double_eq");
     assert.equal(p.goals[sub.goal].statement, "double_eq");
+    // Stage 3: an agent's decomposition waits for the owner; its subgoal schedules nothing.
+    assert.equal(split.certificate_state, "proposed");
+    assert.deepEqual([fact.state, fact.submitter], ["proposed", "bob"]);
+    await assert.rejects(mdc("pull", sub.goal.slice(0, 10)), /inactive_goal/);
+    const noted = await mdc(
+      "note",
+      sub.goal.slice(0, 10),
+      "-m",
+      "unfolding double should be enough",
+    );
+    assert.equal(noted.goal, sub.goal);
+    await http.done(id, "alice", {
+      type: "decomposition",
+      certificate: split.certificate,
+      state: "active",
+      comment: "the right lemma",
+    });
     // Goals record only definitions LeanGround reports as referenced, never IDs from a request:
     // drafts return their source. The coordinator can see another project's definition (it is
     // a member of every project), so a member names one in a resolve of this project's goal.
@@ -240,7 +257,14 @@ async function flow(leanground: { url: string; token: string }) {
     assert.equal(second.statement_from, "declaration");
     assert.equal(second.root, "double_eq");
     const file2 = second.file as string;
-    assert.ok((await readFile(join(dir, file2), "utf8")).includes(D));
+    const text2 = await readFile(join(dir, file2), "utf8");
+    assert.ok(text2.includes(D));
+    // The note is in the read-only prefix.
+    const prefix2 = text2.slice(
+      0,
+      text2.indexOf("-- mdc: edit below this line"),
+    );
+    assert.match(prefix2, /-- \[\S+ bob\] unfolding double should be enough\n/);
     await edit(file2, (t) => t.replace(":= by\n  sorry\n", ":= by\n  rfl\n"));
 
     // Replay 1: the reply to prove is lost after the server ran it; meanwhile the board moves on.
@@ -267,7 +291,14 @@ async function flow(leanground: { url: string; token: string }) {
     assert.equal((await record(file2)).submissions.length, 1);
 
     // done: both leases end; the outcome follows the submissions.
-    const finished = await mdc("done", file2, "--spent", "0");
+    const finished = await mdc(
+      "done",
+      file2,
+      "--spent",
+      "0",
+      "--note",
+      "rfl closes it",
+    );
     assert.deepEqual(
       { lease: finished.lease, outcome: finished.outcome },
       { lease: "finished", outcome: "submitted" },
@@ -279,6 +310,10 @@ async function flow(leanground: { url: string; token: string }) {
 
     // The split and the proof close main's route: the root assembles.
     p = await http.project(id);
+    assert.deepEqual(
+      p.goals[sub.goal].notes!.map((n) => n.text),
+      ["unfolding double should be enough", "rfl closes it"],
+    );
     assert.equal(p.goals[sub.goal].status, "certified");
     assert.equal(p.goals[p.root].status, "derivable");
     await http.done(id, "alice", {

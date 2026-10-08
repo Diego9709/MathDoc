@@ -392,6 +392,7 @@ export class Worker {
     b: Board,
     name: string,
     bound: Awaited<ReturnType<Worker["bind"]>>,
+    actor: string,
   ) {
     const branch = attached(b, name);
     branch.nodes = bound.c.bindings;
@@ -423,7 +424,9 @@ export class Worker {
       checked_version: bound.version,
     });
     delete branch.request.error;
-    for (const cert of bound.certs) ingest(b, cert);
+    // The branch's editor wrote these decompositions into the document (§2.7.3).
+    for (const cert of bound.certs)
+      ingest(b, cert, { source: "document", actor, at: Date.now() });
     derivePicks(b, branch);
   }
   async tick() {
@@ -481,7 +484,7 @@ export class Worker {
         await this.store.checkpoint(
           j,
           (b) => {
-            for (const [name, r] of bound) this.applyBind(b, name, r);
+            for (const [name, r] of bound) this.applyBind(b, name, r, j.actor);
             b.ready = true;
             delete b.sync_error;
           },
@@ -496,7 +499,11 @@ export class Worker {
           attached(b, name).request,
           b.root || undefined,
         );
-        await this.store.checkpoint(j, (b) => this.applyBind(b, name, r), true);
+        await this.store.checkpoint(
+          j,
+          (b) => this.applyBind(b, name, r, j.actor),
+          true,
+        );
         return;
       }
       case "submit_node": {
@@ -557,7 +564,12 @@ export class Worker {
             }
             const branch = attached(b, name);
             branch.nodes = { ...branch.nodes, [id]: binding };
-            if (cert) ingest(b, cert);
+            if (cert)
+              ingest(b, cert, {
+                source: "document",
+                actor: j.actor,
+                at: Date.now(),
+              });
             derivePicks(b, branch);
           },
           true,
@@ -613,11 +625,30 @@ export class Worker {
         const stated = await this.statePremises(b, cert, String(p.source));
         const description =
           typeof p.description === "string" ? p.description : undefined;
+        // Written with the job when it ends; `state` is the certificate's state on the board.
+        const result: Record<string, unknown> = {
+          certificate: cert.id,
+          goal: cert.goal,
+          mode: p.mode,
+          premises: stated.premises.map(
+            ({ goal, name, new: fresh, statement }) => ({
+              goal,
+              name,
+              new: fresh,
+              statement,
+            }),
+          ),
+        };
         await this.store.checkpoint(
           j,
           (b) => {
-            ingest(b, cert);
+            ingest(b, cert, {
+              source: "agent",
+              actor: j.actor,
+              at: Date.now(),
+            });
             const fact = b.facts[String(cert.id)];
+            result.state = fact.state;
             if (description && !fact.description)
               fact.description = description;
             for (const s of stated.premises) {
@@ -631,25 +662,22 @@ export class Worker {
             }
           },
           true,
-          {
-            certificate: cert.id,
-            goal: cert.goal,
-            mode: p.mode,
-            premises: stated.premises.map(
-              ({ goal, name, new: fresh, statement }) => ({
-                goal,
-                name,
-                new: fresh,
-                statement,
-              }),
-            ),
-          },
+          result,
         );
         return;
       }
       case "import": {
         const cert = await this.shared(b, String(j.payload.certificate));
-        await this.store.checkpoint(j, (b) => ingest(b, cert), true);
+        await this.store.checkpoint(
+          j,
+          (b) =>
+            ingest(b, cert, {
+              source: "agent",
+              actor: j.actor,
+              at: Date.now(),
+            }),
+          true,
+        );
         return;
       }
       case "sync": {
@@ -729,7 +757,7 @@ export class Worker {
             }
             for (const id of unavailable)
               if (b.facts[id]) b.facts[id].available = false;
-            for (const f of fetched) ingest(b, f);
+            for (const f of fetched) ingest(b, f, { source: "sync" });
             b.cursor = page.cursor;
             b.last_sync = page.has_more ? 0 : Date.now();
             delete b.sync_error;
@@ -805,7 +833,7 @@ export class Worker {
           await this.store.checkpoint(
             j,
             (b) => {
-              ingest(b, cert);
+              ingest(b, cert, { source: "assembly" });
               b.runs[rid].status = "certified";
               b.runs[rid].certification_id = cid;
             },

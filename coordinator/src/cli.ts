@@ -2,7 +2,7 @@
 // `mdc`: a command-line client of the MathDoc HTTP API (docs/mathdoc.md §2.5; migration stage 5
 // replaced the Rust CLI). Document and board commands are one or two HTTP requests with the
 // caller's access token and print the JSON response. The proof verbs (pull, prove, split,
-// done; src/mdc/) work on goal files and keep replay records in `.mdc/`. Node references
+// done, note; src/mdc/) work on goal files and keep replay records in `.mdc/`. Node references
 // accept an exact title or a UUID.
 //
 //   MDC_URL      server origin (default http://127.0.0.1:17843; a workspace's own server)
@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { Client, MdcError } from "./mdc/client.js";
 import { find as findWorkspace } from "./mdc/workspace.js";
 import * as verbs from "./mdc/verbs.js";
+import { serve as serveMcp } from "./mdc/mcp.js";
 
 const USAGE = `usage: mdc [-p DATABASE/BRANCH] <command>
 
@@ -33,7 +34,11 @@ proof:      proof env [set]             (the database's environment; set reads J
 work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]
             prove FILE [--wait] [--dry-run] [--again]
             split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]
-            done [FILE] [--spent N] [--outcome O]
+            done [FILE] [--spent N] [--outcome O] [--note TEXT]
+            note FILE|GOAL -m TEXT     (what was tried, where it got stuck)
+            mcp [--dir DIR]            (the work commands as MCP tools over stdio)
+tokens:     token new NAME [--scope work,maintain,edit] [--expires 30d|12h|ISO-DATE]
+            token list | token revoke NAME   (delegated tokens act as YOU/NAME)
             (GOAL: a GoalKey, a unique prefix of 8+ hex digits, or a node title or UUID)
 Write commands take --revision REV to require the revision printed by show.`;
 
@@ -89,15 +94,32 @@ async function stdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** Test seams: the process's network, directory and clock. */
+/** Test seams: the process's network, directory, clock and streams. */
 export interface Io {
   fetch?: typeof fetch;
   cwd?: string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  stdin?: NodeJS.ReadableStream;
+  stdout?: NodeJS.WritableStream;
 }
 
-const WORK = new Set(["pull", "prove", "split", "done"]);
+const VERSION = "0.7.0";
+
+/** `30d`, `12h` or an ISO date, as the ISO time a token expires. */
+function expiry(value: string, now: () => number) {
+  const m = /^(\d+)([hd])$/.exec(value);
+  if (m)
+    return new Date(
+      now() + Number(m[1]) * (m[2] === "h" ? 3600000 : 86400000),
+    ).toISOString();
+  const t = Date.parse(value);
+  if (Number.isNaN(t))
+    throw new UsageError("--expires takes 30d, 12h or an ISO date");
+  return new Date(t).toISOString();
+}
+
+const WORK = new Set(["pull", "prove", "split", "done", "note", "mcp"]);
 
 export async function main(
   argv: string[],
@@ -114,7 +136,11 @@ export async function main(
   // A workspace remembers its server, so verbs run inside one need no MDC_URL.
   const workspace = WORK.has(command)
     ? await findWorkspace(
-        command === "pull" || !args[0] ? cwd : dirname(resolve(cwd, args[0])),
+        command === "mcp"
+          ? resolve(cwd, flag("--dir") ?? ".")
+          : command === "pull" || !args[0]
+            ? cwd
+            : dirname(resolve(cwd, args[0])),
       )
     : undefined;
   const origin = (
@@ -152,6 +178,22 @@ export async function main(
   const directory = (body: unknown) => request("POST", "/api/projects", body);
   const coordination = (path: string) => `/api/coordination${path}`;
 
+  if (command === "mcp") {
+    // Serves until stdin ends; stdout carries only protocol messages.
+    await serveMcp(
+      {
+        client,
+        cwd: resolve(cwd, flag("--dir") ?? "."),
+        project,
+        now: io.now ?? Date.now,
+        sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      },
+      io.stdin ?? process.stdin,
+      io.stdout ?? process.stdout,
+      VERSION,
+    );
+    return undefined;
+  }
   if (WORK.has(command)) {
     const ctx: verbs.VerbContext = {
       client,
@@ -166,6 +208,7 @@ export async function main(
       if (command === "pull") return await verbs.pull(ctx, args[0]);
       if (command === "prove") return await verbs.submit(ctx, args[0], "prove");
       if (command === "split") return await verbs.submit(ctx, args[0], "split");
+      if (command === "note") return await verbs.note(ctx, args[0]);
       return await verbs.done(ctx, args[0]);
     } catch (e) {
       if (e instanceof MdcError && e.reason === "usage")
@@ -175,6 +218,27 @@ export async function main(
   }
 
   switch (command) {
+    case "token": {
+      // Delegated tokens (docs/mathdoc.md §2.7.4), managed with your own token.
+      if (args[0] === "list") return request("GET", "/api/tokens");
+      if (args[0] === "revoke")
+        return request(
+          "DELETE",
+          `/api/tokens/${encodeURIComponent(need(args[1], "NAME"))}`,
+        );
+      if (args[0] === "new") {
+        const scopes = flag("--scope")?.split(",").filter(Boolean);
+        const expires = flag("--expires");
+        return request("POST", "/api/tokens", {
+          name: need(args[1], "NAME"),
+          ...(scopes ? { scopes } : {}),
+          ...(expires
+            ? { expires_at: expiry(expires, io.now ?? Date.now) }
+            : {}),
+        });
+      }
+      break;
+    }
     case "status":
       return request("GET", "/api/status");
     case "init":
@@ -396,7 +460,8 @@ const invoked =
 if (invoked)
   main(process.argv.slice(2)).then(
     (out) => {
-      process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+      if (out !== undefined)
+        process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     },
     (e: unknown) => {
       // Usage errors print the usage text; failures print {reason, status?, details?}.

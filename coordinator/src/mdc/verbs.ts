@@ -1,6 +1,7 @@
-// The proof workflow verbs of `mdc` (docs/mathdoc.md §2.5, §2.7.2): `pull` claims a goal and
-// writes its goal file, `prove` / `split` submit the file, `done` ends the lease. Protocol
-// details (revisions, idempotency keys, lease renewal, GoalKey lookup) stay in here.
+// The proof workflow verbs of `mdc` (docs/mathdoc.md §2.5, §2.7.2, §2.7.3): `pull` claims a goal
+// and writes its goal file, `prove` / `split` submit the file, `done` ends the lease, `note`
+// leaves what was learned on the goal. Protocol details (revisions, idempotency keys, lease
+// renewal, GoalKey lookup) stay in here.
 //
 // Leases: a CLI is short-lived, so every verb renews the workspace's leases that are past half
 // their time (decision recorded in §2.6). A lease that lapses only stops scheduling; a later
@@ -273,7 +274,7 @@ export async function pull(ctx: VerbContext, ref: string | undefined) {
 }
 
 /** The record of a pulled file. */
-async function pulled(ctx: VerbContext, file: string) {
+export async function pulled(ctx: VerbContext, file: string) {
   const abs = resolve(ctx.cwd, file);
   const w = await workspace(ctx, dirname(abs));
   const rel = ws.relativeFile(w, abs);
@@ -301,6 +302,7 @@ async function follow(
     if (job.status === "done") {
       s.status = "certified";
       s.certificate = job.result?.certificate;
+      s.state = job.result?.state;
       s.premises = job.result?.premises;
     } else if (job.status === "failed") {
       s.status = "rejected";
@@ -463,6 +465,7 @@ export async function submit(
     key: s.key,
     job: s.job,
     ...(s.certificate ? { certificate: s.certificate } : {}),
+    ...(s.state ? { certificate_state: s.state } : {}),
     ...(s.premises ? { premise_goals: s.premises } : {}),
     ...(s.reason ? { reason: s.reason } : {}),
     ...leases,
@@ -489,6 +492,7 @@ export async function done(ctx: VerbContext, file: string | undefined) {
   const lease = record.lease;
   if (!lease) throw new MdcError("no_lease", `${record.file} holds no lease`);
   const spent = number(ctx, "--spent", 0);
+  const note = ctx.flag("--note");
   const leases = await renew(ctx, w, record.file);
   const board = await ctx.client.board(record.project);
   const a = board.attempts?.[lease.attempt];
@@ -513,6 +517,7 @@ export async function done(ctx: VerbContext, file: string | undefined) {
           epoch: lease.epoch,
           spent,
           outcome,
+          ...(note ? { note } : {}),
         },
         (rev) => `finish-${lease.attempt}-r${rev}`,
         board,
@@ -525,4 +530,42 @@ export async function done(ctx: VerbContext, file: string | undefined) {
   record.lease = null;
   await ws.write(w, record);
   return { file: record.file, goal: record.goal, ...result, ...leases };
+}
+
+/** Leave a note on a goal: a pulled file's goal, or a goal reference with -p. */
+export async function note(ctx: VerbContext, ref: string | undefined) {
+  const text = ctx.flag("--message");
+  if (!ref || !text) throw new MdcError("usage", "mdc note FILE|GOAL -m TEXT");
+  let target: { project: string; goal: string } | undefined;
+  let w: Workspace | undefined;
+  try {
+    const p = await pulled(ctx, ref);
+    w = p.w;
+    target = { project: p.record.project, goal: p.record.goal };
+  } catch (e) {
+    if (!(e instanceof MdcError) || e.reason !== "not_pulled") throw e;
+  }
+  if (!target) {
+    if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
+      throw new MdcError(
+        "usage",
+        "a goal reference needs -p DATABASE/BRANCH (or MDC_PROJECT)",
+      );
+    const [database, branch] = ctx.project.split("/");
+    const board = await liveBoard(ctx.client, database, branch);
+    target = {
+      project: board.id,
+      goal: await goalOf(ctx.client, board, ref, database, branch),
+    };
+    w = await ws.find(ctx.cwd);
+  }
+  const leases =
+    w && w.server === ctx.client.origin ? await renew(ctx, w) : undefined;
+  const key = sha256(`${target.goal}\0${text}`).slice(0, 32);
+  const res = await ctx.client.command(
+    target.project,
+    { type: "note", goal: target.goal, text },
+    (rev) => `note-${key}-r${rev}`,
+  );
+  return { goal: target.goal, note: res.result, ...leases };
 }

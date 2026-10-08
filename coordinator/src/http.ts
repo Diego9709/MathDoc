@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { z } from "zod";
@@ -23,6 +23,15 @@ import {
 } from "./domain.js";
 import { fetchBase, resolveProject } from "./worker.js";
 import { goalDraft } from "./goal-draft.js";
+import {
+  actorName,
+  allows,
+  commandScopes,
+  identify,
+  requireScope,
+  Tokens,
+  type Identity,
+} from "./identity.js";
 import { DocsBackend } from "./docs/routes.js";
 import { DocError } from "./docs/names.js";
 import type { Action } from "./docs/workspace.js";
@@ -55,15 +64,6 @@ function send(res: ServerResponse, status: number, value: unknown) {
   });
   res.end(JSON.stringify(value));
 }
-function authenticate(req: IncomingMessage, cfg: Config) {
-  const token = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
-  for (const [actor, entry] of Object.entries(cfg.actors)) {
-    const a = Buffer.from(token),
-      b = Buffer.from(entry.token);
-    if (a.length === b.length && timingSafeEqual(a, b)) return actor;
-  }
-  throw new Fault("unauthorized", 401);
-}
 function key(req: IncomingMessage) {
   return z.string().min(1).max(200).parse(req.headers["idempotency-key"]);
 }
@@ -81,8 +81,17 @@ export function server(
   lean: LeanGround,
   docs: Documents,
 ) {
+  // `/` separates a person from a delegated token's name (docs/mathdoc.md §2.7.4).
+  for (const name of Object.keys(cfg.actors))
+    if (!actorName.test(name))
+      throw new Error(
+        `MDC_ACTORS: ${JSON.stringify(name)} is not a valid actor name`,
+      );
+  const tokens = new Tokens(store.pool);
+  const authenticate = (req: IncomingMessage): Promise<Identity> =>
+    identify(req, cfg.actors, tokens);
   // Document API and the retained web/ editor (docs/mathdoc.md §4.4). Collaboration lives
-  // under /api/coordination/ (§4.3); /api/me is shared.
+  // under /api/coordination/ (§4.3); /api/me and /api/tokens are shared.
   const documents =
     cfg.terminusUrl && cfg.terminusPassword
       ? new DocsBackend({
@@ -95,7 +104,7 @@ export function server(
           webDir: cfg.webDir ?? "web/dist",
           publicOrigin: cfg.publicOrigin,
           actors: cfg.actors,
-          authenticate: (req) => authenticate(req, cfg),
+          authenticate,
           readBody: body,
           boards: (database, branch) => store.bound(database, branch),
         })
@@ -203,14 +212,38 @@ export function server(
         res.end(data);
         return;
       }
-      const actor = authenticate(req, cfg);
+      const who = await authenticate(req);
+      const actor = who.actor;
+      // Administrator rights are the person's; a delegated token also needs `maintain`.
+      const admin = cfg.actors[who.principal].admin && allows(who, "maintain");
       if (path === "/api/me" && method === "GET") {
-        send(res, 200, { actor, admin: cfg.actors[actor].admin });
+        send(res, 200, {
+          actor,
+          principal: who.principal,
+          admin: cfg.actors[who.principal].admin,
+          scopes: who.scopes,
+        });
+        return;
+      }
+      const tokenPath = /^\/api\/tokens(?:\/([A-Za-z0-9_-]{1,64}))?$/.exec(
+        path,
+      );
+      if (tokenPath) {
+        // Delegated tokens are managed with one's own token: one cannot mint another.
+        requireThat(who.scopes === null, "own_token_required", 403);
+        const [, name] = tokenPath;
+        if (!name && method === "GET")
+          send(res, 200, await tokens.list(who.principal));
+        else if (!name && method === "POST")
+          send(res, 201, await tokens.create(who.principal, await body(req)));
+        else if (name && method === "DELETE")
+          send(res, 200, await tokens.revoke(who.principal, name));
+        else throw new Fault("method_not_allowed", 405);
         return;
       }
       requireThat(coordination, "not_found", 404);
       if (path === "/api/documents" && method === "GET") {
-        requireThat(cfg.actors[actor].admin, "admin_required", 403);
+        requireThat(admin, "admin_required", 403);
         const ref = bindingSchema.parse(Object.fromEntries(url.searchParams));
         send(res, 200, await docs.load(ref));
         return;
@@ -228,6 +261,7 @@ export function server(
         requireThat(method === "PUT", "method_not_allowed", 405);
         // The environment decides what the project's goals mean: owners only. A change
         // starts a new project board; the old one stays readable.
+        requireScope(who, "maintain");
         await documentRole(actor, database, "main", "member_manage");
         const input = environmentInputSchema.parse(await body(req));
         const base = await fetchBase(lean, input.base_key);
@@ -271,6 +305,7 @@ export function server(
           // rooted at `node`; later ones attach their branch to it (converted from the root).
           const input = documentCreateSchema.parse(raw);
           const { database, branch, node } = input.document;
+          requireScope(who, "edit");
           await documentRole(actor, database, branch, "proof_request_create");
           const env = await environments.get(database);
           requireThat(env, "environment_not_configured");
@@ -281,6 +316,7 @@ export function server(
           const existing = await store.project(database, env.environment_id);
           if (!existing) {
             // Creating the project fixes the database's root theorem: owners only.
+            requireScope(who, "maintain");
             await documentRole(actor, database, "main", "member_manage");
             requireThat(
               input.members.every((m) => Object.hasOwn(cfg.actors, m)),
@@ -311,7 +347,7 @@ export function server(
             create: () =>
               newProjectBoard(
                 `mdc-${randomUUID().replaceAll("-", "")}`,
-                actor,
+                who.principal,
                 input,
                 snap.nodes.get(node)!.title,
                 env,
@@ -320,7 +356,7 @@ export function server(
           send(res, out.created ? 201 : 200, await visible(actor, out.board));
           return;
         }
-        requireThat(cfg.actors[actor].admin, "admin_required", 403);
+        requireThat(admin, "admin_required", 403);
         const input = createSchema.parse(raw);
         requireThat(
           input.members.every((m) => Object.hasOwn(cfg.actors, m)),
@@ -363,7 +399,7 @@ export function server(
           input.options,
         );
         const b = {
-          ...newBoard(id, actor, input, resolved.base, resolved.goal),
+          ...newBoard(id, who.principal, input, resolved.base, resolved.goal),
           creation_hash: digest,
         };
         try {
@@ -470,6 +506,7 @@ export function server(
       }
       if (operation === "commands" && method === "POST") {
         const input = commandSchema.parse(await body(req));
+        requireScope(who, ...commandScopes[input.type]);
         if (input.type === "members") {
           requireThat(
             input.members.every((m) => Object.hasOwn(cfg.actors, m)),
@@ -530,6 +567,7 @@ export function server(
         return;
       }
       if (operation === "documents" && method === "PUT") {
+        requireScope(who, "maintain", "edit");
         owner(b, actor);
         const input = z
           .object({ version: z.string().min(1), node: nodeSchema })
@@ -545,6 +583,7 @@ export function server(
         return;
       }
       if (operation === "branches" && method === "POST") {
+        requireScope(who, "maintain", "edit");
         owner(b, actor);
         const input = z
           .object({ name: z.string().regex(/^[\w-]+$/) })

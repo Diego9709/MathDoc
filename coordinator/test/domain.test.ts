@@ -166,8 +166,8 @@ test("retry pins the original plan and creates a new attempt identity", () => {
 });
 test("project boards: a branch's picks choose its route; picks are checked and owner-only", () => {
   const b = projectBoard();
-  ingest(b, fact("t1", "T", ["A", "B"]));
-  ingest(b, fact("t2", "T", ["C"]));
+  ingest(b, fact("t1", "T", ["A", "B"]), { source: "document" });
+  ingest(b, fact("t2", "T", ["C"]), { source: "document" });
   for (const g of ["A", "B", "C"]) ingest(b, fact(g.toLowerCase(), g));
   // Unpicked goals prefer fewer premises; a pick is strict.
   assert.equal(selectRoute(b).root, "t2");
@@ -267,4 +267,202 @@ test("a decomposition's description and a goal's first statement survive re-inge
   );
   stateGoal(b, "missing", { proposition: "True", definitions: [] });
   assert.ok(!Object.hasOwn(b.goals, "missing"));
+});
+test("stage 3: new decompositions wait for review on project boards; complete proofs and document sketches do not", () => {
+  const b = projectBoard();
+  ingest(b, fact("leaf", "A"), { source: "agent", actor: "bob", at: 5 });
+  ingest(b, fact("agent", "T", ["A", "B"]), {
+    source: "agent",
+    actor: "bob",
+    at: 6,
+  });
+  ingest(b, fact("node", "T", ["C"]), { source: "document", actor: "alice" });
+  ingest(b, fact("found", "T", ["D"]), { source: "sync" });
+  ingest(b, fact("loop", "B", ["B"]), { source: "document" });
+  assert.equal(
+    b.facts.leaf.state,
+    "active",
+    "a complete proof needs no review",
+  );
+  assert.equal(b.facts.agent.state, "proposed");
+  assert.equal(b.facts.node.state, "active", "the branch's editor wrote it");
+  assert.equal(b.facts.found.state, "proposed");
+  assert.equal(b.facts.loop.state, "retired", "T ⇐ {T} can never help");
+  assert.equal(b.facts.loop.retired_reason, "premise_is_goal");
+  assert.deepEqual(
+    [b.facts.agent.submitter, b.facts.agent.submitted_at],
+    ["bob", 6],
+  );
+  assert.equal(b.facts.found.submitter, undefined);
+  // A proposed decomposition schedules nothing: its new premises cannot be claimed.
+  const taskOf = (goal: string) =>
+    Object.values(b.tasks).find((t) => t.goal === goal)!.id;
+  const claim = (goal: string) =>
+    command(
+      b,
+      "bob",
+      { type: "claim", task: taskOf(goal), allocation: 0, ttl: 60 },
+      10,
+    );
+  assert.throws(() => claim("B"), /inactive_goal/);
+  claim("C");
+  // Only the owner reviews; the review is kept with its comment.
+  const review = (who: string, state: "active" | "retired", comment?: string) =>
+    command(
+      b,
+      who,
+      {
+        type: "decomposition",
+        certificate: "agent",
+        state,
+        ...(comment ? { comment } : {}),
+      },
+      20,
+    );
+  assert.throws(() => review("bob", "active"), /owner_required/);
+  review("alice", "active", "B is the right lemma");
+  assert.deepEqual(b.facts.agent.review, {
+    actor: "alice",
+    at: 20,
+    state: "active",
+    comment: "B is the right lemma",
+  });
+  claim("B");
+  assert.throws(
+    () =>
+      commandSchema.parse({
+        type: "decomposition",
+        certificate: "agent",
+        state: "proposed",
+      }),
+    /invalid/i,
+    "nothing is set back to proposed",
+  );
+  // Re-ingestion keeps the board's own fields.
+  ingest(b, fact("agent", "T", ["A", "B"]), { source: "sync" });
+  assert.equal(b.facts.agent.state, "active");
+  assert.equal(b.facts.agent.submitter, "bob");
+  assert.equal(b.facts.agent.review!.comment, "B is the right lemma");
+  // An owner may waive review for new sketches; free-standing boards never review.
+  assert.throws(
+    () => command(b, "bob", { type: "policy", review: "none" }, 30),
+    /owner_required/,
+  );
+  command(b, "alice", { type: "policy", review: "none" }, 30);
+  ingest(b, fact("later", "T", ["E"]), { source: "agent" });
+  assert.equal(b.facts.later.state, "active");
+  const legacy = board();
+  ingest(legacy, fact("t", "T", ["A"]));
+  assert.equal(legacy.facts.t.state, "active");
+  assert.throws(
+    () => command(legacy, "alice", { type: "policy", review: "none" }, 0),
+    /not_a_project_board/,
+  );
+});
+test("stage 3: notes stay on the goal, with finish, at most 50 of at most 500 characters", () => {
+  const b = projectBoard();
+  const note = (text: string, at: number) =>
+    command(
+      b,
+      "bob",
+      commandSchema.parse({ type: "note", goal: "T", text }),
+      at,
+    );
+  note("  tried induction on n; stuck at the succ case  ", 1);
+  assert.deepEqual(b.goals.T.notes, [
+    {
+      actor: "bob",
+      at: 1,
+      text: "tried induction on n; stuck at the succ case",
+    },
+  ]);
+  assert.throws(
+    () => command(b, "bob", { type: "note", goal: "X", text: "x" }, 2),
+    /unknown_goal/,
+  );
+  assert.throws(
+    () =>
+      commandSchema.parse({ type: "note", goal: "T", text: "x".repeat(501) }),
+    /500/,
+  );
+  assert.throws(
+    () => commandSchema.parse({ type: "note", goal: "T", text: "   " }),
+    /1/,
+  );
+  for (let i = 0; i < 60; i++) note(`n${i}`, 10 + i);
+  assert.equal(b.goals.T.notes!.length, 50);
+  assert.equal(b.goals.T.notes![0].text, "n10", "the oldest are dropped");
+  const task = Object.values(b.tasks).find((t) => t.goal === "T")!;
+  const a = command(
+    b,
+    "bob",
+    { type: "claim", task: task.id, allocation: 0, ttl: 60 },
+    100,
+  ).result as { id: string; epoch: number };
+  command(
+    b,
+    "bob",
+    {
+      type: "finish",
+      attempt: a.id,
+      epoch: a.epoch,
+      spent: 0,
+      outcome: "no_progress",
+      note: "omega fails on the nonlinear term",
+    },
+    101,
+  );
+  assert.deepEqual(b.goals.T.notes!.at(-1), {
+    actor: "bob",
+    at: 101,
+    text: "omega fails on the nonlinear term",
+    attempt: a.id,
+  });
+});
+test("stage 4: a delegated token acts for its person; leases and audit keep the full identity", () => {
+  const b = projectBoard();
+  ingest(b, fact("t", "T", ["A", "B"]), { source: "document" });
+  const taskOf = (goal: string) =>
+    Object.values(b.tasks).find((t) => t.goal === goal)!.id;
+  const claim = (who: string, goal: string) =>
+    command(
+      b,
+      who,
+      { type: "claim", task: taskOf(goal), allocation: 0, ttl: 60 },
+      0,
+    ).result as { id: string; actor: string; epoch: number };
+  // bob is a member, so bob/agent-a is; alice owns the board, so alice/lead may act as owner.
+  const a = claim("bob/agent-a", "A");
+  const c = claim("bob/agent-b", "B");
+  assert.deepEqual([a.actor, c.actor], ["bob/agent-a", "bob/agent-b"]);
+  assert.throws(() => claim("mallory/agent", "T"), /not_found/);
+  assert.throws(
+    () => command(b, "bob/agent-a", { type: "policy", review: "none" }, 0),
+    /owner_required/,
+  );
+  command(b, "alice/lead", { type: "policy", review: "none" }, 0);
+  // A lease belongs to the token that took it, not to its person's other tokens.
+  assert.throws(
+    () =>
+      command(
+        b,
+        "bob/agent-b",
+        { type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl: 60 },
+        1,
+      ),
+    /stale_lease/,
+  );
+  command(
+    b,
+    "bob/agent-a",
+    { type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl: 60 },
+    1,
+  );
+  // Changing members keeps the leases of tokens whose person stays a member.
+  command(b, "alice", { type: "members", members: ["bob", "carol"] }, 2);
+  assert.equal(b.attempts[a.id].outcome, undefined);
+  b.ready = true; // the provision job that re-registers members has run
+  command(b, "alice", { type: "members", members: ["carol"] }, 3);
+  assert.equal(b.attempts[a.id].outcome, "revoked");
+  assert.equal(b.attempts[c.id].outcome, "revoked");
 });

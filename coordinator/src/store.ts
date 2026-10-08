@@ -1,7 +1,15 @@
 import pg from "pg";
 import { randomUUID, createHash } from "node:crypto";
-import { Board, Command, command, member, requireThat } from "./domain.js";
+import {
+  Board,
+  Command,
+  command,
+  member,
+  principalOf,
+  requireThat,
+} from "./domain.js";
 import { ENVIRONMENT_MIGRATION } from "./proof.js";
+import { TOKEN_MIGRATION } from "./identity.js";
 export interface Job {
   id: string;
   project: string;
@@ -20,7 +28,7 @@ CREATE TABLE IF NOT EXISTS mdc_job(id text PRIMARY KEY, project text NOT NULL RE
 CREATE INDEX IF NOT EXISTS mdc_job_queue ON mdc_job(status,available_at);
 ALTER TABLE mdc_job ADD COLUMN IF NOT EXISTS result jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS mdc_project_scope ON mdc_project((body->'project'->>'database'),(body->'project'->>'environment_id'));
-${ENVIRONMENT_MIGRATION}`;
+${ENVIRONMENT_MIGRATION}${TOKEN_MIGRATION}`;
 // Boards that take part in scheduling: not a stage 4 proof request, not superseded.
 const LIVE = `NOT (p.body ? 'request') AND NOT COALESCE((p.body->'project'->>'superseded')::boolean,false)`;
 export class Store {
@@ -77,13 +85,18 @@ export class Store {
              (p.body->'project'->>'database'=$2 AND ($4::text IS NULL OR p.body->'branches'->$3->'nodes' ? $4))
              OR (p.body->'request'->>'database'=$2 AND p.body->'request'->>'branch'=$3 AND ($4::text IS NULL OR p.body->'nodes' ? $4)))
            ORDER BY CASE WHEN ${LIVE} THEN 0 WHEN p.body ? 'project' THEN 1 ELSE 2 END, p.id`,
-          [actor, document.database, document.branch, document.node ?? null],
+          [
+            principalOf(actor),
+            document.database,
+            document.branch,
+            document.node ?? null,
+          ],
         )
       ).rows.map((r) => r.body);
     return (
       await this.pool.query(
         "SELECT body FROM mdc_project WHERE body->'members' ? $1 ORDER BY id",
-        [actor],
+        [principalOf(actor)],
       )
     ).rows.map((r) => r.body);
   }
@@ -156,7 +169,11 @@ export class Store {
             return { board: b, created: old.result.created === true };
           }
           // Reading main already shows the board exists; joining it is the owner's decision.
-          requireThat(b.members.includes(actor), "not_a_project_member", 403);
+          requireThat(
+            b.members.includes(principalOf(actor)),
+            "not_a_project_member",
+            403,
+          );
           const out = command(
             b,
             actor,

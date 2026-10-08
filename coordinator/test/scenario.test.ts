@@ -19,7 +19,7 @@ const R =
   "theorem sum_doubles : double 2 + double 3 = 10 := by\n  rw [double_two, double_three]\n";
 
 test(
-  "stage 4 scenario: shared lemma, dropout, paused decomposition, restart, assembly and writeback",
+  "stage 4 scenario: shared lemma, dropout, self-premise decomposition, review, restart, assembly and writeback",
   { skip: !ready, timeout: 900000 },
   async () => {
     const schema = await isolated();
@@ -279,7 +279,8 @@ test(
       // Expiry revokes scheduling, not results: bob's late proof is still absorbed.
       await prove("bob", a2, "by rw [double_eq]");
 
-      // Decomposition 1 of B is a cycle (premise = B itself): stored, never proves B.
+      // Decomposition 1 of B is a cycle (premise = B itself): stored, retired on arrival
+      // (stage 3), never proves B.
       const cycle =
         "theorem double_eq_again (n : Nat) : double n = n + n := sorry\ntheorem double_eq (n : Nat) : double n = n + n := double_eq_again n\n";
       const defs = [...nodes(p)[d].definition_ids!];
@@ -302,11 +303,10 @@ test(
         "insufficient",
         "a cycle without leaf evidence is not proved",
       );
-      await done(id, "alice", {
-        type: "decomposition",
-        certificate: cycleFact.id,
-        state: "paused",
-      });
+      assert.deepEqual(
+        [cycleFact.state, cycleFact.retired_reason],
+        ["retired", "premise_is_goal"],
+      );
 
       // Decomposition 2 of B introduces a new definition `twice`, registered with the sketch.
       const split =
@@ -386,6 +386,31 @@ test(
       assert.equal(p.goals[goal(b)].status, "derivable");
       assert.equal(p.goals[p.root].status, "derivable");
 
+      // Stage 3: the participants' decompositions (A1, A2, and B's split) wait for the owner.
+      const proposed = Object.values(p.facts).filter(
+        (f) => f.state === "proposed",
+      );
+      assert.deepEqual(
+        proposed.map((f) => f.goal).sort(),
+        [goal(a1), goal(a2), goal(b)].sort(),
+      );
+      assert.equal(
+        (
+          await command(id, "alice", {
+            type: "assemble",
+            component: "lean-worker",
+            branch: "main",
+          })
+        ).body.reason,
+        "no_active_route",
+      );
+      for (const f of proposed)
+        await done(id, "alice", {
+          type: "decomposition",
+          certificate: f.id,
+          state: "active",
+        });
+
       // Assembly selects a route through active decompositions only.
       await done(id, "alice", {
         type: "assemble",
@@ -397,7 +422,7 @@ test(
       assert.ok(run, JSON.stringify(Object.values(p.runs)));
       assert.ok(
         !run.route.steps.some((s) => s.certificate_id === cycleFact.id),
-        "paused decomposition not used",
+        "retired decomposition not used",
       );
       assert.equal(p.goals[p.root].status, "certified");
       let rootView = await view(r);

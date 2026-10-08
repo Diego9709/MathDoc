@@ -41,7 +41,7 @@ export interface GoalDraft {
   premises: GoalStatement[];
   /** Registered definitions used by the statements, dependencies first. */
   definitions: DefinitionSource[];
-  /** Attempt notes, newest first (project stage 3; always empty before). */
+  /** The goal's latest DRAFT_NOTES attempt notes, newest first (§4.11 G2). */
   notes: { at: string; actor: string; text: string }[];
   /** The goal's prove task, with its lease when leased. */
   task: {
@@ -66,6 +66,8 @@ const definitionRecord = z
     deps: z.array(z.string()).default([]),
   })
   .passthrough();
+
+export const DRAFT_NOTES = 20;
 
 export async function goalDraft(input: {
   board: Board;
@@ -206,7 +208,14 @@ export async function goalDraft(input: {
     root,
     premises,
     definitions,
-    notes: [],
+    notes: (b.goals[input.goal].notes ?? [])
+      .slice(-DRAFT_NOTES)
+      .reverse()
+      .map((n) => ({
+        at: new Date(n.at).toISOString(),
+        actor: n.actor,
+        text: n.text,
+      })),
     task: task && {
       id: task.id,
       state: task.state,

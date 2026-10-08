@@ -9,7 +9,8 @@ import { DocError, projectParts, validateName } from "./names.js";
 import { Terminus, type TerminusConfig } from "./terminus.js";
 import { BranchService, type Reply } from "./service.js";
 import { Workspaces, type Role } from "./workspace.js";
-import { Fault, type Board } from "../domain.js";
+import { Fault, principalOf, type Board } from "../domain.js";
+import { allows, type Identity, type Scope } from "../identity.js";
 
 const BRANCH_BODY_LIMIT = 256 * 1024 * 1024;
 
@@ -19,11 +20,21 @@ export interface DocsOptions {
   webDir: string;
   publicOrigin?: string;
   actors: Record<string, { admin: boolean }>;
-  authenticate: (req: IncomingMessage) => string;
+  /** The caller; a delegated token's scopes limit writes (docs/mathdoc.md §2.7.4). */
+  authenticate: (req: IncomingMessage) => Promise<Identity>;
   /** Rejects oversized or malformed bodies with a Fault (413 / 400). */
   readBody: (req: IncomingMessage, limit?: number) => Promise<unknown>;
   /** Coordination projects bound to a branch, for the certification dimension. */
   boards?: (database: string, branch: string) => Promise<Board[]>;
+}
+
+/** A delegated token may only do what its scopes name. */
+function needScope(who: Identity, scope: Scope, what: string) {
+  if (!allows(who, scope))
+    throw new DocError(
+      `${what.replaceAll("_", " ")} needs a token with the ${scope} scope`,
+      403,
+    );
 }
 
 function send(
@@ -235,18 +246,20 @@ export class DocsBackend {
       return send(res, 403, {
         error: "same-origin requests from the configured host required",
       });
-    let actor: string;
+    let who: Identity;
     try {
-      actor = this.o.authenticate(req);
+      who = await this.o.authenticate(req);
     } catch {
       return send(res, 401, { error: "sign in with an access token" });
     }
+    const actor = who.actor;
     if (!isProject)
-      return this.directory(req, res, actor, path === "/api/projects");
+      return this.directory(req, res, who, path === "/api/projects");
 
     const route = rest.slice("/api".length);
     const method = req.method ?? "GET";
     if (route === "/branches" && method === "POST") {
+      needScope(who, "edit", "branch create");
       await this.workspaces.authorize(
         actor,
         database,
@@ -266,6 +279,8 @@ export class DocsBackend {
     }
     const action = BranchService.action(method, route);
     if (!action) throw new DocError("API endpoint not found", 404);
+    if (!["read", "history", "export"].includes(action))
+      needScope(who, "edit", action);
     await this.workspaces.authorize(actor, database, branchName, action);
     const reply: Reply = await this.branch(database, branchName).handle({
       method,
@@ -308,9 +323,10 @@ export class DocsBackend {
   private async directory(
     req: IncomingMessage,
     res: ServerResponse,
-    actor: string,
+    who: Identity,
     withCounts: boolean,
   ) {
+    const actor = who.actor;
     if (req.method === "GET") {
       const origin = this.o.publicOrigin ?? `http://${req.headers.host}`;
       const projects: Record<string, unknown> = {};
@@ -348,15 +364,20 @@ export class DocsBackend {
     }
     if (req.method !== "POST" || !withCounts)
       throw new DocError("API endpoint not found", 404);
-    send(res, 200, await this.manage(actor, await this.o.readBody(req)));
+    send(res, 200, await this.manage(who, await this.o.readBody(req)));
   }
 
-  private async manage(actor: string, input: unknown) {
+  private async manage(who: Identity, input: unknown) {
+    const actor = who.actor;
     const a = input as Record<string, unknown>;
     if (typeof a !== "object" || a === null || typeof a.action !== "string")
       throw new DocError(
         "Failed to deserialize the JSON body: missing field `action`",
       );
+    // Forking a branch is an edit; creating or deleting databases and branches and managing
+    // roles are maintenance.
+    if (a.action !== "start" && a.action !== "stop")
+      needScope(who, a.action === "new_branch" ? "edit" : "maintain", a.action);
     const need = (...keys: string[]) => {
       for (const k of Object.keys(a))
         if (k !== "action" && !keys.includes(k))
@@ -370,7 +391,7 @@ export class DocsBackend {
           );
       return (k: string) => a[k] as string;
     };
-    const admin = this.o.actors[actor]?.admin === true;
+    const admin = this.o.actors[principalOf(actor)]?.admin === true;
     switch (a.action) {
       case "init": {
         const name = need("name")("name");

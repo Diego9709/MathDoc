@@ -5,6 +5,7 @@ import type pg from "pg";
 import { z } from "zod";
 import { documentPermissionContractSchema } from "../contracts.js";
 import { DocError } from "./names.js";
+import { principalOf } from "../domain.js";
 
 export type Role = "admin" | "owner" | "editor" | "viewer";
 export type Action = z.infer<
@@ -64,6 +65,8 @@ export class Workspaces {
     workspace: Workspace | null,
     branch: string,
   ): Role | null {
+    // A delegated token (`alice/codex-1`) has its person's roles (docs/mathdoc.md §2.7.4).
+    actor = principalOf(actor);
     if (this.isAdmin(actor)) return "admin";
     if (!workspace) return null;
     const rule = workspace.branch_rules.find((r) => r.branch === branch);

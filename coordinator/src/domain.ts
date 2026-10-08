@@ -94,7 +94,19 @@ export interface Goal {
   proposition?: string;
   definitions?: string[];
   declaration?: Declaration;
+  /** Attempt notes, oldest first; the latest NOTES_KEPT are kept (docs/mathdoc.md §2.7.3). */
+  notes?: Note[];
 }
+/** What someone learned working on a goal: what was tried, where it got stuck. */
+export interface Note {
+  actor: string;
+  at: number;
+  text: string;
+  /** Set when the note came with `finish`. */
+  attempt?: string;
+}
+export const NOTES_KEPT = 50;
+export const NOTE_LENGTH = 500;
 /** A theorem's name and signature, as `theorem name binders : type`. */
 export interface Declaration {
   name: string;
@@ -106,11 +118,39 @@ export interface Fact {
   goal: string;
   premises: string[];
   trust: Trust;
-  state: "active" | "paused" | "retired";
+  state: FactState;
   available: boolean;
   /** What a decomposition does, from `submit` (`mdc split -m`). */
   description?: string;
+  /** Who submitted it through MathDoc, and when; absent for certificates found by sync. */
+  submitter?: string;
+  submitted_at?: number;
+  /** The last owner decision on it. */
+  review?: Review;
+  /** Retired on arrival: a premise is the goal itself (T ⇐ {T}), so it can never help. */
+  retired_reason?: "premise_is_goal";
 }
+/**
+ * docs/mathdoc.md §2.7.3: only `active` certificates take part in routes, claims and assembly.
+ * A `proposed` decomposition waits for an owner's review.
+ */
+export type FactState = "proposed" | "active" | "paused" | "retired";
+export interface Review {
+  actor: string;
+  at: number;
+  state: Exclude<FactState, "proposed">;
+  comment?: string;
+}
+/**
+ * Where a certificate reaches the board. Complete proofs are active at once; a sketch from a
+ * document node is active because the branch's editor wrote it; other sketches are proposed
+ * on project boards unless the project waives review.
+ */
+export type Origin = {
+  source: "agent" | "document" | "sync" | "assembly";
+  actor?: string;
+  at?: number;
+};
 export interface Task {
   id: string;
   goal: string;
@@ -182,6 +222,8 @@ export interface Board {
   /** Project boards (docs/mathdoc.md §2.3): one per database and environment. */
   project?: ProjectScope;
   branches?: Record<string, BranchState>;
+  /** Project boards: whether new sketches wait for review (absent: they do). */
+  review?: "required" | "none";
 }
 export interface Accepted {
   certification_id: string;
@@ -207,12 +249,19 @@ export interface BranchState {
   writebacks: Record<string, Writeback>;
   accepted?: Accepted;
 }
+/**
+ * The person behind an actor: `alice` for `alice/codex-1`, a delegated token (docs/mathdoc.md
+ * §2.7.4). Membership and ownership are the person's; leases and audit keep the full actor.
+ */
+export function principalOf(actor: string) {
+  return actor.split("/")[0];
+}
 export function member(b: Board, actor: string) {
-  requireThat(b.members.includes(actor), "not_found", 404);
+  requireThat(b.members.includes(principalOf(actor)), "not_found", 404);
 }
 export function owner(b: Board, actor: string) {
   member(b, actor);
-  requireThat(b.owner === actor, "owner_required", 403);
+  requireThat(b.owner === principalOf(actor), "owner_required", 403);
 }
 /** Why a board accepts no commands, if it does not. */
 export function readOnly(b: Board): string | undefined {
@@ -400,7 +449,24 @@ export const factSchema = z
     }),
   })
   .passthrough();
-export function ingest(b: Board, raw: unknown) {
+/** The state of a certificate new to the board. */
+function initialState(
+  b: Board,
+  goal: string,
+  premises: string[],
+  origin: Origin,
+): FactState {
+  if (premises.includes(goal)) return "retired";
+  if (!premises.length || !b.project) return "active";
+  if (origin.source === "document" || origin.source === "assembly")
+    return "active";
+  return b.review === "none" ? "active" : "proposed";
+}
+export function ingest(
+  b: Board,
+  raw: unknown,
+  origin: Origin = { source: "agent" },
+) {
   const f = factSchema.parse(raw);
   requireThat(
     f.access.visibility === "public" ||
@@ -427,17 +493,31 @@ export function ingest(b: Board, raw: unknown) {
     !["__proto__", "constructor", "prototype"].includes(f.id),
     "invalid_fact",
   );
-  const prior = b.facts[f.id];
+  const prior = Object.hasOwn(b.facts, f.id) ? b.facts[f.id] : undefined;
+  const premises = [...new Set(f.premises)];
+  // Re-ingestion (every sync) refreshes the certificate and keeps what the board added.
   b.facts[f.id] = {
+    ...prior,
     id: f.id,
     goal: f.goal,
-    premises: [...new Set(f.premises)],
+    premises,
     trust: f.trust,
-    state: prior?.state ?? "active",
+    state: prior?.state ?? initialState(b, f.goal, premises, origin),
     available: true,
-    ...(prior?.description ? { description: prior.description } : {}),
   };
+  if (!prior) {
+    const fact = b.facts[f.id];
+    if (origin.actor) fact.submitter = origin.actor;
+    if (origin.at !== undefined) fact.submitted_at = origin.at;
+    if (premises.includes(f.goal)) fact.retired_reason = "premise_is_goal";
+  }
   recompute(b);
+}
+/** Keep a note on a goal; the oldest beyond NOTES_KEPT are dropped. */
+export function addNote(b: Board, goal: string, note: Note) {
+  const g = b.goals[goal];
+  g.notes = [...(g.notes ?? []), note].slice(-NOTES_KEPT);
+  return note;
 }
 export function recompute(b: Board) {
   for (const g of Object.values(b.goals)) g.status = "insufficient";
@@ -584,13 +664,30 @@ export const commandSchema = z.discriminatedUnion("type", [
         "execution_failed",
         "released",
       ]),
+      // What was learned, kept on the task's goal (§2.7.3).
+      note: z.string().trim().min(1).max(NOTE_LENGTH).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("note"),
+      goal: short,
+      text: z.string().trim().min(1).max(NOTE_LENGTH),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("policy"),
+      review: z.enum(["required", "none"]),
     })
     .strict(),
   z
     .object({
       type: z.literal("decomposition"),
       certificate: short,
+      // Reviewing a proposed decomposition is setting it active or retired (§2.7.3).
       state: z.enum(["active", "paused", "retired"]),
+      comment: z.string().trim().min(1).max(2000).optional(),
     })
     .strict(),
   z.object({ type: z.literal("sync") }).strict(),
@@ -660,7 +757,8 @@ export function command(
       b.members = [...new Set([b.owner, ...c.members])];
       b.ready = false;
       for (const a of Object.values(b.attempts))
-        if (!a.outcome && !b.members.includes(a.actor)) {
+        // A delegated token keeps its lease while its person stays a member.
+        if (!a.outcome && !b.members.includes(principalOf(a.actor))) {
           a.outcome = "revoked";
           a.spent = a.reserved;
           b.spent += a.spent;
@@ -691,6 +789,14 @@ export function command(
     case "notes":
       b.notes = c.notes;
       return { result: { saved: true } };
+    case "note":
+      requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
+      return { result: addNote(b, c.goal, { actor, at: now, text: c.text }) };
+    case "policy":
+      owner(b, actor);
+      requireThat(b.project, "not_a_project_board", 400);
+      b.review = c.review;
+      return { result: { review: b.review } };
     case "task": {
       owner(b, actor);
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
@@ -761,14 +867,29 @@ export function command(
         b.spent += a.spent;
         b.tasks[a.task].state = "ready";
         delete b.tasks[a.task].attempt;
+        if (c.note)
+          addNote(b, b.tasks[a.task].goal, {
+            actor,
+            at: now,
+            text: c.note,
+            attempt: a.id,
+          });
       }
       return { result: a };
     }
-    case "decomposition":
+    case "decomposition": {
       owner(b, actor);
       requireThat(Object.hasOwn(b.facts, c.certificate), "not_found", 404);
-      b.facts[c.certificate].state = c.state;
-      return { result: b.facts[c.certificate] };
+      const f = b.facts[c.certificate];
+      f.state = c.state;
+      f.review = {
+        actor,
+        at: now,
+        state: c.state,
+        ...(c.comment ? { comment: c.comment } : {}),
+      };
+      return { result: f };
+    }
     case "sync":
       return {
         result: { queued: true },
