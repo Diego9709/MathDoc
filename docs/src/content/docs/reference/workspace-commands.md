@@ -2,15 +2,16 @@
 title: CLI commands
 ---
 
-`mdc` is a thin client of the [HTTP API](../http-api/): each command is one or two
-requests made with your token, and the output is the JSON response. It keeps no
-local state and can run on any machine that reaches the server.
+`mdc` is a client of the [HTTP API](../http-api/): each document and board
+command is one or two requests made with your token, and the output is the JSON
+response. Only the [proof work](#proof-work) commands keep local state, in a
+`.mdc/` directory next to their goal files; it never holds a token.
 
 ## Setup
 
 | Environment | Meaning |
 | --- | --- |
-| `MDC_URL` | Server origin; default `http://127.0.0.1:17843`. |
+| `MDC_URL` | Server origin; default `http://127.0.0.1:17843`, or the server a `.mdc/` workspace was created for. |
 | `MDC_TOKEN` | Your access token (required). |
 | `MDC_PROJECT` | Default `DATABASE/BRANCH` for branch, node and proof commands. |
 
@@ -21,8 +22,9 @@ a deployment's `mdc` wrapper (`scripts/mdc-docker` in a checkout) runs it in the
 `runtime` container from the host.
 
 Output is pretty-printed JSON on stdout. Exit code 2 means a usage error (the
-usage text is printed); 1 means the request failed, with `HTTP STATUS: message`
-on stderr. `mdc -h` prints the command list.
+usage text is printed); 1 means the command failed, with one line of JSON on
+stderr: `{"reason": CODE, "status": HTTP_STATUS, "details": TEXT}` (`status` only
+for HTTP errors). `mdc -h` prints the command list.
 
 ## Server and workspaces
 
@@ -104,6 +106,70 @@ echo '{"type": "sync"}' | mdc proof command PROJECT_ID
 
 `proof command` reads the board first and sends its revision as `If-Match`, with
 a fresh `Idempotency-Key`; rerunning the command is therefore a new request, not
-a replay. Agents that need replay safety should call the
-[HTTP API](../agents/) directly. Command types are listed in
-[Proofs with LeanGround](../proofs/#commands).
+a replay. For proving, use the [proof work](#proof-work) commands, which replay
+safely; other agents can call the [HTTP API](../agents/) directly. Command types
+are listed in [Proofs with LeanGround](../proofs/#commands).
+
+## Proof work
+
+Four commands take one goal of the database's current project from a claim to a
+submitted proof or decomposition. They work on a **goal file**, a Lean file that
+`mdc pull` writes, and keep its record in `.mdc/` (found in the current directory
+or above, like `.git/`).
+
+| Command | Behavior |
+| --- | --- |
+| `mdc pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]` | Claim the goal's task (lease of S seconds, default and maximum 3600; N budget units reserved, default 0) and write its goal file, by default `<first 8 digits of the GoalKey>-<conclusion>.lean`. Never overwrites a file (`file_exists`). `--with` adds more goals as available premises; `--no-claim` writes the file without a lease. |
+| `mdc prove FILE [--wait] [--dry-run] [--again]` | Submit the file as a complete proof (`has_premises` if a `sorry` premise remains). |
+| `mdc split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]` | Submit the file as a decomposition (`no_premises` if none remains). Its new premises become goals of the project, stated automatically. |
+| `mdc done [FILE] [--spent N] [--outcome O]` | End the lease, reporting `submitted` if the file was submitted under it and `no_progress` otherwise (or O). Without FILE, the one file holding your lease. |
+
+GOAL is a full GoalKey, a unique prefix of at least 8 hex digits, or the title or
+UUID of a converted node on the branch (`-p DATABASE/BRANCH`, or `--branch`).
+
+```sh
+mdc pull double_eq -p myproject/main      # writes 3f9a1c2e-double_eq.lean
+# edit the proof below the line "-- mdc: edit below this line"
+mdc split 3f9a1c2e-double_eq.lean -m "induction on n" --wait
+mdc pull 9d02b7c1 -p myproject/main       # a new subgoal, by key prefix
+mdc prove 9d02b7c1-double_succ.lean --wait
+mdc done 9d02b7c1-double_succ.lean
+mdc done                                  # the remaining lease
+```
+
+**The goal file.** Above the line `-- mdc: edit below this line` is a read-only
+header: the format line `-- mdc-goal-file/1`, the goal, `import` of the base,
+the project's context and the registered definitions the statements use, in the
+order LeanGround checks them. Changing it fails with `prefix_modified`. Below
+the line are the available premises (`theorem … := sorry`, one per line) and the
+goal's theorem, whose proof is `sorry`. You may:
+
+- replace the goal's proof; its name and signature must stay
+  (`root_missing`, `root_duplicated`, `root_statement_changed`);
+- use the available premises by name; those you do not mention are dropped when
+  you submit;
+- add premises (`theorem name … := sorry`): each becomes a subgoal;
+- add proved lemmas and definitions (`def`, `abbrev`, `structure`, …);
+  definitions a premise statement mentions are registered with the submission.
+
+The body may not contain `import` or context commands (`context_in_body`),
+`example`, `instance`, `namespace`, `#` commands, attributes or `private`
+(`unsupported_declaration`); continuation lines must be indented; names must be
+unique (`duplicate_name`) and free of `'` (`invalid_name`); a premise may not
+state the goal itself (`premise_equals_root`). `--dry-run` prints what would be
+submitted without sending it.
+
+**Replays.** Before sending, `mdc` records the submission's idempotency key and
+the board revision. If the reply is lost, run the same command again: it resends
+the same request, and the server returns the first result instead of running it
+twice. If the request never arrived and the board has moved on, the resend is
+refused as outdated and a new submission is made. The same file submitted again
+reports the earlier submission (`replayed: true`); `--again` sends it anew.
+`--wait` waits for the worker and reports the certificate and each new premise
+(`--timeout`, default 600 seconds).
+
+**Leases.** Every `pull`, `prove`, `split` and `done` also renews your leases in
+the workspace that are past half their time. A lease you let lapse only stops
+reserving the task for you: a correct proof submitted later is still recorded.
+If someone else holds the task, `pull` names them; `--no-claim` lets you work on
+it anyway.

@@ -3,7 +3,7 @@
 状态：2026-10-08 整理。本文取代 `docs/` 下原有的 10 份规划、阶段报告与规范文档（见附录 A），是 MathDoc 唯一的
 内部规划文档。面向用户的英文参考在文档站 `docs/src/content/docs/`，不在本文范围内。
 
-对应代码：主要工作分支 `codex/mathdoc-coordination`；LeanGround `main` 的 `3965273`。
+对应代码：主要工作分支 `codex/mathdoc-coordination`，项目阶段 2 在分支 `claude/mdc-verbs`（§3.5）；LeanGround `main` 的 `3965273`。
 
 ## 1. 本文与阅读方法
 
@@ -46,6 +46,9 @@
 | 回写 | 把组装通过的源码写回 TerminusDB 的某个分支 |
 | 幂等键 | 请求附带的唯一 ID，服务端见到同一个键时返回第一次的结果，不会再执行一次 |
 | `mdc` | MathDoc 的命令行，是 HTTP API 的客户端 |
+| 目标草稿 | 服务端为一个目标给出的材料：结论的名字与签名、可用前提、所用定义的源码、环境上下文、任务与租约。`mdc pull` 据此写出工作文件 |
+| 工作文件 | `mdc pull` 写出的 Lean 文件，格式为 `mdc-goal-file/1`：分隔行以上是只读前段，以下是可编辑正文（§4.11） |
+| `.mdc/` | 工作文件旁的记录目录：每个文件对应哪个目标、租约、每次提交的幂等键与修订号。不保存令牌 |
 
 ## 2. 产品规划
 
@@ -61,7 +64,7 @@ MathDoc 是数学知识的协作应用。它负责提出问题、组织协作、
 | 把文档节点转换为 LeanGround 请求，并把结果回写文档 | 本地 Lean：已从默认构建与部署中移除 |
 | 身份与文档权限 | 与 EvoHarness 的集成（不在本轮范围） |
 
-本文只描述 `codex/mathdoc-coordination` 及由它派生的分支（§3.4）：TypeScript 后端，证明交给 LeanGround。
+本文只描述 `codex/mathdoc-coordination` 及由它派生的分支（§3.5）：TypeScript 后端，证明交给 LeanGround。
 `main` 上的旧 Rust 应用不在本文范围内。
 
 ### 2.2 分工
@@ -147,14 +150,17 @@ Project（= 一个 TerminusDB 数据库）
 
 它不做四件事：裁判（由 LeanGround 负责）、事实来源（以服务端看板为准）、证明搜索（由 Agent 负责）、维护者决策。
 
-**现状** [实测：`coordinator/src/cli.ts`]：`mdc` 是 HTTP API 的薄客户端，证明相关只有 `proof env/submit/list/status/command`。
-其中 `proof command` 读原始 JSON，每次都生成新的幂等键，所以断网重试会重复提交；它也没有自动续租，拆法后需要手写子目标陈述。
+**现状** [实测：读代码，2026-10-08，分支 `claude/mdc-verbs`]：
+- 文档命令与 `proof env/submit/list/status/command` 仍是 HTTP API 的薄客户端。其中 `proof command` 读原始 JSON，每次都生成新的幂等键，
+  所以断网重试会重复提交。
+- 第一批动词 `pull / prove / split / done` 已在项目阶段 2 实现（§3.4）：它们封装了修订号、幂等键、续租和 GoalKey 解析；
+  拆法产生的子目标由服务端自动登记陈述，不再需要手写。
 
 **动词层**（项目阶段 2）：在现有命令之上，加一层以证明工作流命名的命令。第一批：
 
 | 动词 | 做什么 |
 |---|---|
-| `mdc pull GOAL [--branch B]` | 领取目标，写出工作文件（§4.11）；之后的 `mdc` 调用顺带续租（续租方式待定，见 §2.7.2） |
+| `mdc pull GOAL [--branch B]` | 领取目标，写出工作文件（§4.11）；之后的 `mdc` 调用顺带续租（项目阶段 2 决定 1） |
 | `mdc prove FILE` | 把文件作为完整证明提交 |
 | `mdc split FILE -m 说明` | 把文件作为拆法提交；服务端自动为新子目标登记陈述 |
 | `mdc done [--spent N]` | 结束租约并报告实际花费 |
@@ -167,7 +173,7 @@ Project（= 一个 TerminusDB 数据库）
 
 工程性质：
 
-- 默认输出 JSON，错误码稳定；
+- 默认输出 JSON，错误码稳定；失败时 stderr 输出一行 JSON `{reason, status?, details?, uncertain?}`；
 - `.mdc/` 只保存重放记录，不保存令牌；
 - 每个 Agent 使用自己的委托子令牌（阶段 4）；
 - `mdc mcp` 把同一组动词暴露为 MCP 工具（MCP 即 Model Context Protocol，让聊天式 Agent 调用外部工具的标准协议）。
@@ -232,6 +238,24 @@ Project（= 一个 TerminusDB 数据库）
 5. 本分支没有转换某节点时，借用另一个已挂载分支上文本相同（含所用定义）的同一节点的状态。
 6. LeanGround 项目 ID 随机生成；环境改回以前的值时，恢复那时的看板。
 
+**项目阶段 2 实现中定下、待评审的细节**（2026-10-08）：
+
+1. **续租**：每次运行 `pull / prove / split / done`，都顺带为本工作区内、本人持有、剩余时间不足一半的租约续租；
+   是否已过期由服务端判断。不启动常驻进程。`pull` 的 `--ttl` 默认取上限 3600 秒。即 §2.7.2 关键设计 1 的第一种做法。
+2. **预算**：`pull` 默认预留 0（`--allocation N` 可改），所以 `done --spent` 默认 0。外部 Agent 的花费只能自报（§4.8）。
+3. **拆法说明**：`split` 必须带 `-m`；最长 2000 字符；同一条认证保留第一次的说明。
+4. **结论签名的来源**依次是：分支 B 上转换后未改动的节点；看板上记录的声明；只有命题时写成 `theorem goal_<前 8 位> : 命题`。
+   看板上的声明合并了 §2.7.2 原计划的第二、三种来源：它取自引入该目标的草图占位，或任一分支上陈述该目标的节点，先记下的保留。
+5. **定义 ID 的来源**：目标上只记录 LeanGround 报告的定义 ID，即 `resolve` 响应中被陈述引用的定义、本项目认证的 `definitions`、
+   本项目节点登记的定义；不记录请求里给出的定义 ID。原因：目标草稿返回定义源码，而 GoalKey 不受未引用定义的影响，
+   如果照抄请求里的 ID，成员就能借一个 `resolve` 读到协调服务可见、但属于其他项目的定义源码 [推断：读 LeanGround `fact_components.py:93-97`]。
+6. **自动陈述失败的处理**：LeanGround 拒绝或 GoalKey 不一致，只记在作业结果上；LeanGround 暂时不可用时，整个 `submit` 作业重试，
+   重试会再提交一次同样的源码。
+7. **工作文件前段的上下文顺序**改为 LeanGround 构造检查前言的实际顺序（§4.11），修正原规范中未核实的写法。
+8. **租约不独占**：他人持有任务时，`pull` 以 `task_unavailable` 拒绝，并给出持有人和到期时间；`--no-claim` 只写文件、不领取。
+9. **工作区记住服务器**：`.mdc/workspace.json` 记录服务器地址，在工作区内运行动词时可以不设 `MDC_URL`；
+   设了而不一致时拒绝（`workspace_server_mismatch`）。
+
 ### 2.7 路线图
 
 迁移阶段 0–5 已经完成（§3.2），后续工作按项目阶段推进。下表回答：每个阶段做什么、怎样算完成。
@@ -239,7 +263,7 @@ Project（= 一个 TerminusDB 数据库）
 | 阶段 | 内容 | 验收 | 状态 |
 |---|---|---|---|
 | 1 共享看板 | 环境和看板改为按数据库；分支是路线；节点状态按 GoalKey 读共享看板；旧请求只读 | 两个分支选不同的根拆法、共用引理 B：一个分支证出 B 后，另一分支的 B 节点同时显示已证出，不需要导入；旧请求可读、拒绝命令 | 已实现，待评审（§3.3） |
-| 2 `mdc` 动词层 | `pull / split / prove / done`、`.mdc/` 重放、自动续租、服务端按目标生成草稿、自动 `resolve`；`check` 等 LeanGround 接口 | 断网重试不重复提交；一个 Agent 只用这四个动词就能把一个目标拆开并证完 | 未开始 |
+| 2 `mdc` 动词层 | `pull / split / prove / done`、`.mdc/` 重放、自动续租、服务端按目标生成草稿、自动 `resolve`；`check` 等 LeanGround 接口 | 断网重试不重复提交；一个 Agent 只用这四个动词就能把一个目标拆开并证完 | 已实现，待评审（§3.4）；未在真实 LeanGround 上运行 |
 | 3 审阅 | `proposed` 状态、审阅视图、尝试笔记 | `proposed` 的拆法不产生可领取的任务，启用后才产生 | 未开始 |
 | 4 Agent 身份 | 委托子令牌、`mdc mcp` | 两个命令行 Agent 各用自己的子令牌：审计记录可以区分，子令牌无法执行维护者命令 | 未开始 |
 | 5 规模与证否 | 看板拆表、证否、`mdc next` 调度 | 参与者数、目标数和写入延迟的目标值在本阶段开始前定下 | 未开始 |
@@ -252,6 +276,9 @@ Project（= 一个 TerminusDB 数据库）
 - **阶段 1 的真实验收**：在真实 LeanGround 上运行 `scenario.test.ts`、`mathlib.test.ts` 和浏览器 e2e 的协作用例。
   三者都需要 LeanGround 令牌（§4.12）。运行之前，阶段 1 只能算「待评审」。
 - **主工作区里那组未提交的改动**（删除 `app/` 原型）要由它的作者提交。否则之后的每次提交都得用路径限定，避开它。
+
+2026-10-08 开始阶段 2 时，这两项都没有完成：没有 LeanGround 令牌，所以阶段 1 的真实验收没有运行；那组改动仍未提交，
+其中也改了 `coordinator/src/http.ts`。所以阶段 2 在单独的工作树和分支 `claude/mdc-verbs` 上开发（§3.5），主工作区保持原样。
 
 #### 2.7.2 阶段 2：`mdc` 动词层
 
@@ -269,7 +296,7 @@ Project（= 一个 TerminusDB 数据库）
 
 **关键设计**：
 
-1. **续租方式（待定）。** CLI 是短命进程，没法像常驻程序那样定时续租。可选的做法有三种：
+1. **续租方式（已定：第一种，见 §2.6 项目阶段 2 决定 1）。** CLI 是短命进程，没法像常驻程序那样定时续租。可选的做法有三种：
    - 每次调用 `mdc` 时顺带续租；`pull` 可用 `--ttl` 设到最长 3600 秒（命令允许的上限 [实测]）；
    - `pull` 启动一个常驻的续租进程，`done` 时结束它；
    - 完全不续租，到期由服务端回收（现在的行为）。
@@ -403,7 +430,8 @@ Project（= 一个 TerminusDB 数据库）
 | 迁移阶段 5：切换默认入口、删除 Rust 应用 | 已实现，待评审 | 2026-09-29 | `d8abcb9`、`cc8ef1f`（合并 `main`） |
 | Project 模型与工作文件规范（设计） | 已决定 A–F、G1–G4 | 2026-10-01/02 | `d7a1ff3`、`cb850d2` |
 | 项目阶段 1：共享看板 | 已实现，待评审 | 2026-10-02 | `dc2f143`、`3a1c668`、`99060b4`、`2d9fa39` |
-| 项目阶段 2–5 | 未开始 | — | — |
+| 项目阶段 2：`mdc` 动词层 | 已实现，待评审；未在真实 LeanGround 上运行 | 2026-10-08 | 分支 `claude/mdc-verbs`（§3.5） |
+| 项目阶段 3–5 | 未开始 | — | — |
 
 「待评审」的意思是：作者已按验收标准自测，还没有经过维护者评审，也没有在真实部署上验收。
 
@@ -501,19 +529,88 @@ Project（= 一个 TerminusDB 数据库）
 **未运行**：`scenario.test.ts`、`mathlib.test.ts`、浏览器 e2e 的协作用例，三者都需要 LeanGround 令牌。
 所以阶段 1 只能算「待评审」，还不是「已验收」。
 
-### 3.4 分支与合并状态
+### 3.4 项目阶段 2 的要点
+
+**目的**：验证 §2.7.2 的两条验收标准：一个 Agent 只用 `pull / split / prove / done` 就能把一个目标拆开并证完；
+回复丢失后重跑同一条命令，不会重复提交。
+
+**背景**：阶段 2 之前，新子目标只有 GoalKey，Agent 要读认证源码、手写陈述、再发 `resolve`；`proof command` 每次生成新的幂等键，
+重试会重复提交（§2.5）。LeanGround 没有按 GoalKey 读陈述的接口（§4.10）。
+
+**改动**：
+
+- 服务端：
+  - 新路由 `GET /projects/ID/goals/KEY/draft?branch=B[&with=…]`（`goal-draft.ts`）：按目标给出草稿，不再限于文档节点；
+  - `submit` 作业吸收草图后，为看板上还没有身份的前提自动登记陈述（`worker.ts` 的 `statePremises`），结果写进作业的 `result`；
+  - `submit` 命令加 `description`，记在认证上，同步时保留；
+  - 目标增加 `proposition`、`definitions`、`declaration` 三个字段（§4.2）；
+  - 作业表增加 `result` 列，新路由 `GET /projects/ID/jobs/JOB` 读单个作业。
+- 客户端（`coordinator/src/mdc/`）：`client.ts`（请求与错误码）、`goal-file.ts`（工作文件的生成与解析，复用服务端的 `lean-source.ts`）、
+  `workspace.ts`（`.mdc/` 记录）、`verbs.ts`（四个动词、目标引用解析、续租、重放）。`cli.ts` 只负责参数与分派。
+- 文档站：`reference/workspace-commands.md` 新增「Proof work」，`agents.md`、`proofs.md`、`http-api.md` 相应更新。
+
+**方法**：
+
+- 环境：本机 compose 的两个测试容器，PostgreSQL 17 与 TerminusDB，与 `mathdoc-demo` 隔离；LeanGround 是合同替身
+  `leanground-double.ts`。**替身不检查 Lean 证明**；它的 `resolve` 按名字近似报告被引用的定义。
+- 验收测试 `verbs.test.ts`，只经 `mdc` 的 `main()` 操作（另用管理员 HTTP 建库、建项目、触发组装）：
+  bob 以 viewer 身份 `pull` 根目标 → 加一条占位后 `split --wait` → 新子目标自动得到陈述 → 按 10 位前缀 `pull` 子目标 → `prove --wait` → 两次 `done` → 组装。
+  `--wait` 的轮询间隔改为「执行一遍作业队列」，所以 worker 与客户端在同一进程中交替运行。
+- 两种重放，各用一个注入故障的 `fetch`：
+  1. 请求已到达服务端，回复丢失；重跑之前另有一次写入，使修订号前进；
+  2. 请求没有到达，之后修订号前进。
+- 续租：把客户端时钟拨快 70 秒（租约 120 秒，剩余不足一半），再运行一个会被本地拒绝的 `prove`。
+- 变异检验：逐个改坏 8 处实现，看测试能否失败。
+
+**结果** [实测，2026-10-08]：
+
+- 协调层测试 47 项：43 项通过，0 项失败，4 项跳过（都需要真实 LeanGround）；`cli` 测试另以不可达的 LeanGround 地址单独运行通过。
+  其中新增 10 项：`goal-file` 7 项（纯函数）、`domain` 1 项、`verbs` 2 项（替身 1 项通过，真实 LeanGround 1 项跳过）。
+  所以本阶段的改动没有让已有测试失败，但真实 LeanGround 上的行为仍未验证。
+- `verbs.test.ts` 连续运行 5 次，5 次通过，每次约 1–1.5 秒。所以在替身上没有观察到时序上的不稳定；n = 5 不足以排除低概率的不稳定。
+- 验收流程中：子目标的作业结果为 `{name: double_eq, new: true, statement: resolved}`，看板上该目标有身份和声明；
+  第二次 `pull` 的签名来自 `declaration`；组装得到 `certified`。所以四个动词足以完成「拆开并证完」，在替身上成立。
+- 重放 1：重跑后使用原幂等键与原修订号，看板上 `submit` 作业共 2 个（拆法 1 个、证明 1 个），记录中只有 1 条提交。
+  所以回复丢失不会造成重复提交。重放 2：记录依次为 `not_applied`、`queued`，作业只多 1 个。所以过时的重发不会执行。
+- 续租：拨快时钟后的那次调用把租约的到期时间推后。所以本地校验失败的调用也能续租。
+- 变异检验：8 处改坏全部被测试发现，包括重发时不复用原记录、把 `revision_conflict` 当作拒绝、自动陈述不接受结果、
+  G1 不删前提、不核对前段哈希、不续租、重新吸收时丢失说明、照抄请求里的定义 ID。所以这些测试能发现对应的回归。
+  第一次检验时「丢失说明」没有被发现，因此补了 `domain` 测试。
+- 构建出的 `mdc`（`dist/cli.js`）：失败时退出码 1，stderr 为一行 JSON；用法错误退出码 2。文档站 `astro check` 0 错误，构建通过。
+
+过程中修正的问题：
+
+- 续租原先放在本地校验之后，文件被本地拒绝时不续租；
+- 续租原先在客户端时钟显示过期时直接放弃租约，客户端时钟偏快时会误丢租约；
+- 目标上原先照抄请求里的定义 ID，可能泄露其他项目的定义源码（§2.6 项目阶段 2 决定 5）。
+
+**结论**：在替身上，阶段 2 的两条验收标准成立。由于替身不检查 Lean、也不按 LeanGround 的规则计算 GoalKey，
+「自动陈述得到相同的 GoalKey」这一点只在替身的规则下成立，在真实 LeanGround 上仍需验证。
+
+**未覆盖**：
+
+- 真实 LeanGround 上的同一流程（`verbs.test.ts` 第二项，需要 `MDC_TEST_LEANGROUND_URL/TOKEN`）。其中最需要验证的是：
+  草图占位的 `∀ binders, type` 写法在 LeanGround 上解析出的 GoalKey，是否等于认证里该前提的 GoalKey。
+- 前提、定义的「是否被引用」按标识符文本判断，没有经过 elaboration，可能误判；误判由服务端拦下（多留占位得到
+  `subgoal_unused`，漏报定义得到 `definition_not_registered`），不会产生错误的认证 [推断]。
+- `mdc check`、`goals`、`next`、`show`、`note` 不在本阶段；尝试笔记在草稿中恒为空（阶段 3）。
+- 多个 Agent 共用一个 `.mdc/` 时只续各自的租约，但记录文件可能被并发写；建议每个 Agent 使用自己的工作目录 [推断]。
+- 界面不显示拆法说明（阶段 3 的审阅视图）。
+
+### 3.5 分支与合并状态
 
 [实测：`git`，2026-10-08]
 
 | 分支 | 位置 | 说明 |
 |---|---|---|
 | `codex/mathdoc-coordination` | 主工作区，远端 `colab` | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1 和本文。项目阶段 1 的开发分支 `claude/shared-project-board` 已以快进方式并入后删除 |
+| `claude/mdc-verbs` | 工作树 `.claude/worktrees/mdc-verbs`，仅本地 | 项目阶段 2，从 `9b41dd3` 分出，待评审后并入主要工作分支。为了不碰主工作区里他人未提交的改动而单独开发 |
 
 主工作区里另有一组尚未提交的改动（不是本文作者所做）：删除归档原型 `app/` 及其开关 `MDC_APP_DIR`、删除部分 perf 报告，
 并相应修改 `coordinator/src/http.ts`、`config.ts`、`package.json` 等。合并时这组改动原样保留在工作区；在它之上，
 协调层测试 34 项通过、3 项跳过（需要真实 LeanGround），前端测试 29 项通过 [实测，2026-10-08]。
 
-### 3.5 已知问题
+### 3.6 已知问题
 
 - **Monaco 着色用例不稳定**：[实测，16 次运行失败 2 次] 编辑器显示后 4–40 毫秒内会重新着色一次，测试恰好在这个窗口取样就会失败。
 - **LeanGround 安装脚本原地覆盖已签名的二进制**：macOS 会拒绝运行；本机靠「写新文件再改名」绕过，LeanGround 仓库本身没有修改。
@@ -560,13 +657,15 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `coordinator/src/docs/*` | 文档接口：路由、按分支的服务、快照与校验、TerminusDB 客户端、工作区权限、LaTeX 桥 |
 | `coordinator/src/domain.ts` | 看板与全部命令，写成纯状态转换 |
 | `coordinator/src/store.ts` | PostgreSQL：看板、幂等命令记录、事件、作业队列、创建或挂载、取代 |
-| `coordinator/src/worker.ts` | 作业：`provision`、`attach`、`submit_node`、`resolve`、`submit`、`import`、`sync`、`assemble`、`writeback` |
+| `coordinator/src/worker.ts` | 作业：`provision`、`attach`、`submit_node`、`resolve`、`submit`（含为新前提自动登记陈述）、`import`、`sync`、`assemble`、`writeback` |
 | `coordinator/src/lean-source.ts` | 保守的 Lean 扫描器 |
 | `coordinator/src/proof.ts` | 证明环境、节点转换、提交草稿、合同生成 |
 | `coordinator/src/writeback.ts` | 回写批次 |
 | `coordinator/src/certification.ts` | 文档视图中的认证维度 |
 | `coordinator/src/contracts.ts` | v1 合同的运行时镜像；JSON Schema 在 `coordinator/contracts/v1/` |
-| `coordinator/src/cli.ts` | `mdc` |
+| `coordinator/src/cli.ts` | `mdc`：参数解析与分派 |
+| `coordinator/src/goal-draft.ts` | 目标草稿（§4.11） |
+| `coordinator/src/mdc/*` | `mdc` 的动词层：请求与错误码（`client.ts`）、工作文件（`goal-file.ts`）、`.mdc/` 记录（`workspace.ts`）、四个动词（`verbs.ts`） |
 
 ### 4.2 数据与存储
 
@@ -576,7 +675,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | 工作区 owner 与角色 | PostgreSQL `mdc_workspace` |
 | 证明环境 | `mdc_project_environment`（按数据库）；阶段 4 的按分支环境留在 `mdc_environment`，只作为回退来源 |
 | 看板 | `mdc_project`，每张看板一条 JSONB；唯一索引 `mdc_project_scope`（数据库、环境） |
-| 命令幂等记录、事件、作业 | `mdc_command`、`mdc_event`、`mdc_job` |
+| 命令幂等记录、事件、作业 | `mdc_command`、`mdc_event`、`mdc_job`（`result` 列记录作业结果，阶段 2 起） |
 | 认证与源码 | LeanGround；MathDoc 只存 ID |
 
 **兼容规则**：
@@ -588,7 +687,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 **看板结构**（`domain.ts` 的 `Board`）：
 
-- 共享部分：`goals`（GoalKey → 陈述、状态）、`facts`（认证 → 目标、前提、信任、`active/paused/retired`、是否仍可读）、
+- 共享部分：`goals`（GoalKey → 展示用标签、状态，以及阶段 2 起的 `proposition`、`definitions`、`declaration`）、
+  `facts`（认证 → 目标、前提、信任、`active/paused/retired`、是否仍可读、拆法说明 `description`）、
   `tasks`、`attempts`、`runs`（组装记录，带 `branch`）、`budget`/`spent`、`cursor`（LeanGround 事件游标）、`revision`。
 - 项目看板另有：
   - `project`：数据库、环境、根节点、是否被取代；
@@ -700,7 +800,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | 命令 | 谁 | 作用 |
 |---|---|---|
 | `claim` / `heartbeat` / `finish` | 成员 / 租约持有人 | 租约：30–3600 秒；`finish` 报告花费和结果 |
-| `submit`、`resolve`、`import`、`submit_node`、`attach`、`sync` | 成员（`attach` 还需要分支的 editor 权限） | 后台作业 |
+| `submit`、`resolve`、`import`、`submit_node`、`attach`、`sync` | 成员（`attach` 还需要分支的 editor 权限） | 后台作业；`submit` 可带 `description`，吸收草图时为新前提登记陈述（§4.11） |
 | `task`、`members`、`decomposition`、`pick`、`assemble`、`retry`、`accept` | owner | 管理 |
 | `notes` | 成员 | 项目备注 |
 
@@ -719,6 +819,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
   - 检查各分支是否过期，已删除的分支标为过期。
 - 目标状态从认证推导；没有叶子证据的环不能证出任何目标。
 - **只读看板**：旧请求返回 `proof_request_read_only`，被取代的看板返回 `project_superseded`；二者都不再同步。
+
+**读取**：除看板本身外，`GET /projects/ID/jobs`（最近 100 个作业）、`/jobs/JOB`（单个作业及其 `result`）、
+`/goals/KEY/draft`（目标草稿，§4.11）、`/nodes/UUID/draft`（节点草稿）、`/facts/CERT`（认证及源码）。
 
 ### 4.9 组装、回写与过期
 
@@ -767,13 +870,27 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 - 源码形态较严，拒绝 `#` 命令、`open … in`、属性、`private`、`instance`、`class`、记号、宏等；
 - 没有读取项目成员的接口；
-- 没有按 GoalKey 读取陈述的接口，所以拆法产生的新子目标需要有人写出陈述再 `resolve`；
+- 没有按 GoalKey 读取陈述的接口，认证也只给出前提的 GoalKey，不给出完整身份。所以 `submit` 作业从草图的占位声明重新 `resolve`，
+  GoalKey 一致才记下（§4.11）；
 - `/v1/check` 按 import 选择基座，不认识项目里登记的定义，也不返回 `sorry` 处的证明目标（所以需要项目决定 E 中的新接口）。
 
 ### 4.11 目标工作文件规范 `mdc-goal-file/1`
 
-本节规定 `mdc pull` 写出、`mdc check/prove/split` 读入的文件。规范已定（G1–G4），实现属于项目阶段 2，**尚未实现**。
-「必须」「不得」违反时 `mdc` 拒绝；「应当」违反时只警告。
+本节规定 `mdc pull` 写出、`mdc check/prove/split` 读入的文件。规范已定（G1–G4），已在项目阶段 2 实现（`coordinator/src/mdc/`；
+`check` 除外）。「必须」「不得」违反时 `mdc` 拒绝；「应当」违反时只警告。
+
+**目标草稿**（`GET /projects/ID/goals/KEY/draft?branch=B[&with=K1,K2]`）：`pull` 只用这一个接口取材料。
+
+- 结论的名字与签名依次取自：分支 B 上绑定该目标、转换后 Lean 文本未改的节点；看板上的 `declaration`（引入该目标的草图占位，
+  或某个分支上陈述它的节点，先记下的保留）；看板上只有 `proposition` 时，写成 `theorem goal_<前 8 位> : 命题`。
+  目标没有身份时报 `goal_unresolved`，因为没有身份就无法提交它的证明。
+- 可用前提：节点来源时取该节点的直接前提节点；再加上 `with` 指定的目标。每个前提的签名按同样的顺序取得。
+- 定义：结论与前提所用定义的并集，加上它们的依赖，按依赖顺序排列，源码从 LeanGround 读取。
+- 另给出 `root_module`、`context`、`options`、`environment_id`、看板修订号、笔记（阶段 3 之前恒为空）和该目标的 `prove` 任务及租约。
+
+**新子目标的陈述**：`submit` 作业吸收草图后，对看板上还没有身份的每个前提，按认证的绑定名在提交的源码中找到占位声明，
+以 `∀ binders, type` 加上认证的 `definitions` 调用 `resolve`。GoalKey 一致就记下身份、命题、被引用的定义和声明；
+不一致记为 `identity_mismatch`，LeanGround 拒绝记为它的原因码，都只写进作业结果。
 
 **工作目录**：
 
@@ -789,8 +906,10 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
   - 第 1 行 `-- mdc-goal-file/1`；
   - 说明注释；
   - `import <root_module>`；
-  - 环境上下文：`set_option`、`open`、`universe`、`variable` 各组，组内保持原顺序；
-  - 已登记定义的源码，按依赖顺序排列，每段前有一行 `-- definition <名字> (<ID 前 8 位>)`；
+  - 环境上下文与已登记定义，顺序与 LeanGround 构造检查前言的顺序相同 [实测：LeanGround `Tools/VerifyWorker.lean:272-280`，`3965273`]：
+    `raw`、`local_options`、由环境 `options` 生成的 `set_option` 行（按键排序）、`universe`、`open`、已登记定义、`local_notation`、
+    `local_attrs`、`variable`。定义按依赖顺序排列，每段前有一行 `-- definition <名字> (<ID 前 8 位>)`。
+    原规范写的是 `set_option`、`open`、`universe`、`variable`，并把定义放在上下文之后；那是未核实的推测，已按实际顺序修正；
   - 最近 20 条尝试笔记，用 `--` 注释写出，每条最多 500 字符；
   - 分隔行。
 - **正文（可编辑）**，初始内容是可用前提（每行一个 `theorem … := sorry`）和结论定理。顶层命令只能是三类：
@@ -824,19 +943,25 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 - 结果不确定时，原样重发。服务端先查幂等键、再查修订号，所以第一次如果已经生效，重发只会拿回第一次的结果；
 - 收到 `revision_conflict` 时，说明之前的发送没有生效，用新的修订号新增一条记录。
 
-**记录字段**：`format`、`file`、`project`、`goal`、`environment_id`（环境变了就拒绝提交，报 `environment_changed`）、
-`root`、`root_signature`、`definitions`、`premises`、`prefix_sha256`、`pulled_revision`、`lease`、`submissions`。
+**记录字段**：`format`、`file`（相对工作区根的路径）、`project`（看板 ID）、`database`、`branch`、`goal`、
+`environment_id`（环境变了就拒绝提交，报 `environment_changed`）、`root`、`root_signature`、`definitions`、`premises`、
+`prefix_sha256`、`pulled_revision`、`lease`（任务、尝试、epoch、持有人、到期时间、ttl、预留额、领取时间）、`submissions`。
 
-**待补**：在项目模型下，`pull` 需要 `--branch` 参数，决定从哪个分支的节点预填可用前提 [推断]。
+**提交记录的状态**：`sending`（已落盘、结果未知）、`queued`（看板已接收）、`certified`（作业已记下认证）、`rejected`（被拒，附原因）、
+`not_applied`（修订号过时，没有执行）。同一份正文已有 `queued` 或 `certified` 的记录时，只报告那次结果（`replayed: true`），
+`--again` 强制重发；`--wait` 等作业结束（`--timeout` 默认 600 秒）。
+
+**分支**：`pull` 的 `--branch` 默认取 `-p` 指定的分支，决定节点来源的签名和可用前提。
 
 ### 4.12 测试与验收
 
 | 测试 | 需要 | 内容 |
 |---|---|---|
-| `domain`、`lean-source`、`contracts`、`config` | 无 | 纯函数与合同 fixture |
+| `domain`、`lean-source`、`contracts`、`config`、`goal-file` | 无 | 纯函数与合同 fixture；`goal-file` 是工作文件的生成与解析 |
 | `integration`、`documents` | PostgreSQL | 并发领取、幂等、作业租约、事件游标；LeanGround 用 HTTP 替身 |
 | `docs` | PostgreSQL、TerminusDB | 文档接口与权限矩阵 |
 | `project` | PostgreSQL、TerminusDB | 项目看板验收；LeanGround 用 `leanground-double.ts` |
+| `verbs` | PostgreSQL、TerminusDB；第二项另需真实 LeanGround | 项目阶段 2 验收：四个动词走完拆开与证完、两种重放、续租；第一项用替身 |
 | `cli` | PostgreSQL、TerminusDB，以及配置好的 LeanGround 变量（不调用证明命令） | `mdc` 文档命令 |
 | `scenario`、`mathlib` | 再加真实 LeanGround（`MDC_TEST_LEANGROUND_URL/TOKEN`；`mathlib` 另需 Mathlib 基座的 key） | 完整协作场景 |
 | `web` vitest、svelte-check、`web/e2e` | e2e 需要 TerminusDB、PostgreSQL，协作用例需要 LeanGround | 界面 |
@@ -848,7 +973,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 **真实环境**：
 
-- 项目阶段 1 没有在真实 LeanGround 上运行（§3.3）；
+- 项目阶段 1、阶段 2 都没有在真实 LeanGround 上运行（§3.3、§3.4）；
 - 整个协作应用没有在生产 TerminusDB 和生产 LeanGround 上部署验收；
 - 新 CI 没有在 GitHub 上运行过；
 - 本机没有真实的 MathDoc 文档库，Mathlib 统计与手写文档只是替代。
@@ -861,7 +986,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 **协作功能缺口**：
 
-- 证否、尝试笔记、`proposed` 审阅、`mdc` 动词层、委托子令牌；
+- 证否、尝试笔记、`proposed` 审阅、委托子令牌；
+- `mdc` 只有第一批动词，没有 `check`、`goals`、`next`、`show`、`note`；`proof command` 仍不能安全重放；
+- 续租只在调用 `mdc` 时发生：Agent 超过租期不调用 `mdc`，租约就会过期（§2.6 项目阶段 2 决定 1）；
 - 分支 editor 不能修改自己分支的选择；
 - 删除的分支不会自动移出看板；
 - 状态借用只按 UUID 加文本比较。
@@ -893,7 +1020,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `docs/coordination.md` | Codex 原型的说明 | §4.1、§4.8（原型界面 `app/` 已不再使用） |
 | `docs/coordination-migration-plan.md` | 迁移计划（§0–§12） | §2.1、§2.6、§3.2、§4 |
 | `docs/coordination-phase-1-contracts.md` | v1 合同与合同决定 A–D | §2.6、§4.3、§4.6 |
-| `docs/coordination-phase-2.md` … `phase-5.md` | 迁移阶段 2–5 报告 | §3.2、§3.5 |
+| `docs/coordination-phase-2.md` … `phase-5.md` | 迁移阶段 2–5 报告 | §3.2、§3.6 |
 | `docs/coordination-project-model.md` | Project 模型设计、项目决定 A–F | §2.3–§2.7 |
 | `docs/coordination-goal-file.md` | `mdc-goal-file/1` 规范、决定 G1–G4 | §4.11 |
 | `docs/coordination-project-stage-1.md` | 项目阶段 1 报告 | §2.6、§3.3 |

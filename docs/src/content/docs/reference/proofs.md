@@ -145,7 +145,7 @@ requests of earlier versions refuse every command (`project_superseded`,
 | `heartbeat` | lease holder | `attempt`, `epoch`, `ttl` | Extend the lease. |
 | `finish` | lease holder | `attempt`, `epoch`, `spent`, `outcome` | End the attempt. |
 | `resolve` | member | `goal`, `proposition`, `definitions` | Queued: give a known GoalKey its statement. |
-| `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions` | Queued: submit a proof or sketch. |
+| `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions`, `description?` | Queued: submit a proof or sketch; a sketch's new premises get their statements ([below](#new-subgoals)). |
 | `submit_node` | member | `node`, `branch` | Queued: resubmit a theorem node of an attached branch. |
 | `attach` | member, `editor` on the branch | `branch` | Queued: convert the branch from the root node (again). |
 | `import` | member | `certificate` | Queued: bring a shared certificate into the project. |
@@ -160,6 +160,23 @@ requests of earlier versions refuse every command (`project_superseded`,
 `lean-worker` with `leaf` (`component_mode_mismatch`). `goal` may be omitted in
 `submit` only when the conclusion uses a definition introduced by
 `new_definitions` in the same submission.
+`description` (up to 2000 characters) says what a decomposition does; it is
+kept on the certificate (`facts.ID.description`). Agents usually submit through
+[`mdc prove` and `mdc split`](../workspace-commands/#proof-work).
+
+### New subgoals
+
+LeanGround names a sketch's premises only by GoalKey. When the `submit` job
+records a sketch, it states each premise the board does not know yet: it takes
+the placeholder declaration with that premise's name from the submitted source,
+resolves it with the certificate's definitions and keeps it only if the GoalKey
+matches. The goal then has an identity (so proofs of it can be submitted) and a
+`declaration` (`name`, `binders`, `type`) from which
+[goal drafts](../http-api/#collaboration) are written. A mismatch or a
+LeanGround rejection is recorded in the job's `result` and the premise stays
+without a statement; `resolve` can still give it one. Goals record only
+definition IDs that LeanGround reports for their statements, never IDs taken
+from a request, because goal drafts return the definitions' source.
 
 ## Assembly and writeback
 

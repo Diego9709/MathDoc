@@ -127,9 +127,11 @@ Paths are under `/api/coordination`. Errors are `{"reason": CODE}`, plus
 | `GET /projects/ID` | member, read | The board, without the branches you cannot read. |
 | `POST /projects/ID/commands` | member, read | Headers `If-Match: "REVISION"`, `Idempotency-Key`. Returns `{revision, result, job}`. |
 | `GET /projects/ID/jobs` | member, read | The latest 100 jobs. |
+| `GET /projects/ID/jobs/JOB_ID` | member, read | One job: `kind`, `status` (`queued`, `running`, `done`, `failed`), `tries`, `error` and, when done, `result`. A `submit` job's result is `{certificate, goal, mode, premises}`; each premise has `goal`, its placeholder `name`, `new` (not on the board before) and `statement` (`resolved`, `known`, `identity_mismatch`, `placeholder_not_found` or a LeanGround reason). |
 | `GET /projects/ID/history` | member, read | The latest 100 events. |
 | `GET /projects/ID/facts/CERT_ID` | member, read | A certificate of this project, with source, from LeanGround. |
 | `GET /projects/ID/nodes/UUID/draft?branch=BRANCH` | member, read on the branch | Submission draft for a theorem node of an attached branch ([Agent interface](../agents/#3-get-the-draft)). |
+| `GET /projects/ID/goals/KEY/draft?branch=BRANCH[&with=KEY,…]` | member, read (and read on `BRANCH`) | The material of a goal file (`mdc pull`) for any goal with a statement: `root` (`name`, `binders`, `type`, `definitions`, and `from`: `node` for an unchanged converted node of `BRANCH`, `declaration` for the declaration recorded on the board, `proposition` for a bare resolved proposition), available `premises` (the node's premise nodes, then the `with` goals), `definitions` (`id`, `name`, `source`, dependencies first), `root_module`, `context`, `options`, `environment_id`, `revision`, `notes` and the goal's prove `task` with its lease. `409 goal_unresolved` for a goal without a statement. |
 
 For a project board, "read" means read access on the database's `main` branch;
 for a per-branch proof request, on its branch. Others get `404 not_found`.

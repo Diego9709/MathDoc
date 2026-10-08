@@ -10,6 +10,15 @@ its documents) and membership in the database's project
 shows the request flow; placeholders are in capitals and no value here is a real
 token.
 
+## With `mdc`
+
+An agent that can run commands needs only four:
+`mdc pull GOAL`, `mdc split FILE -m DESCRIPTION`, `mdc prove FILE` and `mdc done`
+([Proof work](../workspace-commands/#proof-work)). They claim and renew leases,
+write a goal file with the project's context and definitions, check it locally,
+and make every submission safe to rerun after a lost reply. The rest of this page
+is the HTTP flow underneath, for agents that call the API directly.
+
 ## Conventions
 
 ```sh
@@ -96,15 +105,18 @@ curl -s -X POST "$P/commands" -H "$AUTH" -H 'Content-Type: application/json' \
  "component": "lean-worker-sketch",
  "mode": "sketch",
  "definitions": ["DEFINITION_ID"],
- "new_definitions": []}
+ "new_definitions": [],
+ "description": "reduce to helper twice"}
 EOF
 ```
 
 Use `lean-worker` with `leaf` for a proof without `sorry` premises and
 `lean-worker-sketch` with `sketch` otherwise. `definitions` lists the definition
-IDs the source uses (take them from the draft). The worker submits to LeanGround
-and, if the certificate is accepted, adds it to the board's `facts`; goal
-statuses update accordingly.
+IDs the source uses (take them from the draft). `description` is optional and
+says what a decomposition does. The worker submits to LeanGround and, if the
+certificate is accepted, adds it to the board's `facts`; goal statuses update
+accordingly. Keep the idempotency key and revision until you have the reply: if
+it is lost, resend the same request with both, and you get the first result.
 
 ## 5. Finish
 
@@ -120,33 +132,45 @@ attempt or for others, until its goal is certified.
 
 ## New subgoals
 
-A sketch introduces premises that LeanGround knows only by GoalKey; they appear on
-the board as goals without a statement and with a `prove` task each. To prove one:
+A sketch introduces premises that LeanGround knows only by GoalKey. They appear
+on the board as goals with a `prove` task each, and the `submit` job states each
+new one from its placeholder in the sketch
+([New subgoals](../proofs/#new-subgoals)): the goal gets an `identity` and a
+`declaration`. The job's `result` (`GET $P/jobs/JOB_ID`) lists every premise with
+its name and whether its statement was `resolved`.
 
-1. Read the certificate to learn the premise names:
-   `curl -s -H "$AUTH" "$P/facts/CERTIFICATE_ID"`. Its `bindings` list
-   `{name, role, goal}`; `role` `premise` entries map each name to a GoalKey. The
-   response also contains the checked `source`, where each premise appears as a
-   `sorry` theorem.
-2. Write the premise's statement as a proposition, for example
-   `∀ (n : Nat), n + 0 = n`, and resolve it:
+To prove one, get its goal draft, which works for any goal with a statement, not
+only for document nodes:
 
-   ```sh
-   curl -s -X POST "$P/commands" -H "$AUTH" -H 'Content-Type: application/json' \
-     -H 'If-Match: "REVISION"' -H 'Idempotency-Key: resolve-GOAL_KEY' \
-     -d '{"type":"resolve","goal":"GOAL_KEY","proposition":"∀ (n : Nat), n + 0 = n","definitions":[]}'
-   ```
+```sh
+curl -s -H "$AUTH" "$P/goals/GOAL_KEY/draft?branch=BRANCH"
+```
 
-   The worker computes the GoalKey of the proposition in the project environment
-   (with the given definition IDs) and records the statement only if it equals
-   `GOAL_KEY` (otherwise the job fails with `identity_mismatch`).
-3. Claim its task and submit a `leaf` (or another sketch) with that `goal`.
+It has the conclusion's `name`, `binders` and `type`, the `definitions` with
+their source, the context, and the goal's `task`. Write
+`theorem NAME BINDERS : TYPE := PROOF`, claim the task and submit it with that
+`goal` and the definition IDs.
+
+If a premise could not be stated (its `statement` in the job result is not
+`resolved` or `known`), resolve it yourself:
+
+```sh
+curl -s -X POST "$P/commands" -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'If-Match: "REVISION"' -H 'Idempotency-Key: resolve-GOAL_KEY' \
+  -d '{"type":"resolve","goal":"GOAL_KEY","proposition":"∀ (n : Nat), n + 0 = n","definitions":[]}'
+```
+
+The worker computes the GoalKey of the proposition in the project environment
+(with the given definition IDs) and records the statement only if it equals
+`GOAL_KEY` (otherwise the job fails with `identity_mismatch`).
 
 ## Other reads
 
 | Request | Returns |
 | --- | --- |
-| `GET $P/jobs` | The latest 100 jobs: kind, status, tries, error. |
+| `GET $P/jobs` | The latest 100 jobs: kind, status, tries, error, result. |
+| `GET $P/jobs/JOB_ID` | One job, with its `result` when done. |
+| `GET $P/goals/GOAL_KEY/draft?branch=BRANCH` | A goal's statement, definitions, context and task. |
 | `GET $P/history` | The latest 100 board events: actor, kind, revision. |
 | `GET $P/facts/CERTIFICATE_ID` | A certificate of this project, with source. |
 | `GET /api/me` | `{actor, admin}` for your token. |
