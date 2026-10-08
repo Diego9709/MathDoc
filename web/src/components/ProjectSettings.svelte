@@ -3,7 +3,7 @@
   import LatexProjectForm from "./LatexProjectForm.svelte";
   import ProofEnvironmentForm from "./ProofEnvironmentForm.svelte";
   let { onClose }: { onClose: () => void } = $props();
-  // The legacy Lake project is preserved unchanged (plan §5); Lean is checked by LeanGround
+  // The legacy Lake project is preserved unchanged (docs/mathdoc.md §4.2); Lean is checked by LeanGround
   // in the proof environment set per branch.
   let tab = $state<"proof" | "latex">("proof");
   let form = $state<{canClose: () => boolean}>();

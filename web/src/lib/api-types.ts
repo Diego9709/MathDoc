@@ -7,7 +7,7 @@ export type NodeSummary = { fnode: string, title: string, depth: number, };
 export type FormalCodeStatus = "no_code" | "unverified" | "verified";
 
 /**
- * Formal certification from LeanGround (migration plan §7.1), separate from any local check.
+ * Formal certification from LeanGround (docs/mathdoc.md §4.5), separate from any local check.
  * `not_submitted`: the node is not bound to a proof request yet. `insufficient` with
  * `truncated` means the search stopped early, not that no route exists. `stale`: the Lean
  * text or a definition it uses changed after submission. `rejected`: the node could not be

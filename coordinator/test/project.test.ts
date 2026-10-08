@@ -1,4 +1,4 @@
-// Stage 1 of docs/coordination-project-model.md: one project board per database, branches
+// Project stage 1 (docs/mathdoc.md §2.7, §3.3): one project board per database, branches
 // as routes over the shared proof graph. Real PostgreSQL and TerminusDB; LeanGround is the
 // contract double of leanground-double.ts, so nothing here checks a Lean proof. Skipped
 // unless MDC_TEST_DATABASE_URL, MDC_TEST_TERMINUS_URL and MDC_TEST_TERMINUS_PASSWORD are set.

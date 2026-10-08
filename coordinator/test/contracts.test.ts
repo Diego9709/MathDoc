@@ -436,7 +436,7 @@ test("decision D: the approved document permission matrix is exactly the fixture
         [...row.roles].sort(),
       ]),
   );
-  // Changing any row is a product decision: update docs/coordination-phase-1-contracts.md §3.4 too.
+  // Changing any row is a product decision: update docs/mathdoc.md §4.3 too.
   assert.deepEqual(matrix, {
     read: ["admin", "editor", "owner", "viewer"],
     write: ["admin", "editor", "owner"],

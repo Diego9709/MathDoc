@@ -12,7 +12,7 @@ export type Action = z.infer<
 >["authorization_matrix"][number]["action"];
 type Workspace = z.infer<typeof documentPermissionContractSchema>;
 
-/** The approved v1 matrix (docs/coordination-phase-1-contracts.md §3.4). */
+/** The approved v1 matrix (docs/mathdoc.md §4.3, contract decision D). */
 export const APPROVED_MATRIX: Record<Action, Role[]> = {
   read: ["admin", "owner", "editor", "viewer"],
   history: ["admin", "owner", "editor", "viewer"],

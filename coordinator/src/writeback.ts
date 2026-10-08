@@ -1,4 +1,4 @@
-// Batched writeback of a certified route into the bound document branch (plan §7.2;
+// Batched writeback of a certified route into the bound document branch (docs/mathdoc.md §4.9;
 // contract mathdoc.writeback-batch.v1, decision C). Every node of the batch is checked
 // against the Lean text it had when it was converted; any conflict aborts the whole batch,
 // so no partial "certified" state is ever written. Node IDs are derived from the batch,

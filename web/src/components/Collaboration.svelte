@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The four collaboration views (plan §4.2, §9): proof overview, task board,
+  // The four collaboration views (docs/mathdoc.md §4.8): proof overview, task board,
   // decompositions and result review. People use the same commands as agents. A project
   // board is shared by the database's branches; this dialog shows the current branch's view.
   import { onDestroy, onMount } from "svelte";

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `mdc`: a thin command-line client of the MathDoc HTTP API (plan §11; stage 5 replaces the
+// `mdc`: a thin command-line client of the MathDoc HTTP API (docs/mathdoc.md §2.5; migration stage 5 replaced the
 // Rust CLI). Every command is one or two HTTP requests with the caller's access token;
 // output is the JSON response. Node references accept an exact title or a UUID.
 //

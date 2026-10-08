@@ -1,4 +1,4 @@
-// Conservative scanner for a node's Lean block (plan §7.3; contract
+// Conservative scanner for a node's Lean block (docs/mathdoc.md §4.7; contract
 // mathdoc.declaration-binding.v1, decision B). It never elaborates: top-level commands
 // start at column 0, anything unrecognised is rejected with a machine-readable reason, and
 // LeanGround's own checks stay final. Positions refer to the original source.

@@ -1,4 +1,4 @@
-// Plan §10 stage 4: the complete scenario on a real LeanGround (lean-worker and
+// Migration stage 4 (docs/mathdoc.md §3.2): the complete scenario on a real LeanGround (lean-worker and
 // lean-worker-sketch), a real TerminusDB and PostgreSQL. Skipped unless all of
 // MDC_TEST_DATABASE_URL, MDC_TEST_TERMINUS_URL, MDC_TEST_TERMINUS_PASSWORD,
 // MDC_TEST_LEANGROUND_URL and MDC_TEST_LEANGROUND_TOKEN are set.

@@ -1,6 +1,6 @@
 <script lang="ts">
   // The LeanGround proof environment of this database (contract proof-environment.v1,
-  // docs/coordination-project-model.md). It is stored by the coordinator, never inside the
+  // docs/mathdoc.md §2.3). It is stored by the coordinator, never inside the
   // legacy Lake project. Changing it retires the current project board, which stays readable.
   import { onDestroy, onMount } from "svelte";
   import { coordination, currentBranch, type Environment, type Trust } from "../lib/coordination";

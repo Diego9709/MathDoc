@@ -458,7 +458,7 @@ test(
         view.revision,
       );
       assert.equal(renamed.status, 200);
-      // Plan §7.1: certification is its own dimension; this backend never runs a local check.
+      // docs/mathdoc.md §4.5: certification is its own dimension; this backend never runs a local check.
       assert.equal(renamed.body.formalization.lean_certification, null);
       const withLean = await call(
         "eddy",

@@ -80,8 +80,8 @@ export function server(
   lean: LeanGround,
   docs: Documents,
 ) {
-  // Document API and the retained web/ editor (plan §6.1, §6.2). Collaboration lives
-  // under /api/coordination/ (plan §6.3); /api/me is shared.
+  // Document API and the retained web/ editor (docs/mathdoc.md §4.4). Collaboration lives
+  // under /api/coordination/ (§4.3); /api/me is shared.
   const documents =
     cfg.terminusUrl && cfg.terminusPassword
       ? new DocsBackend({
@@ -100,7 +100,7 @@ export function server(
         })
       : null;
   const environments = new Environments(store.pool);
-  // Plan §6.3: collaboration never widens document access. Each project route re-checks
+  // docs/mathdoc.md §4.3: collaboration never widens document access. Each project route re-checks
   // the actor's role on the bound branch; a missing role reads as not found.
   const documentRole = async (
     actor: string,

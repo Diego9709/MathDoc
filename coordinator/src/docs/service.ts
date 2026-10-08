@@ -40,7 +40,7 @@ export interface Call {
   headers: Record<string, string | string[] | undefined>;
   body: () => Promise<unknown>;
   actor: string;
-  /** Projects bound to this branch (plan §7.1 certification dimension). */
+  /** Projects bound to this branch (docs/mathdoc.md §4.5 certification dimension). */
   boards?: Board[];
 }
 
@@ -158,7 +158,7 @@ export class BranchService {
       formalization: {
         lean: formal(n, "lean"),
         rocq: formal(n, "rocq"),
-        // Plan §7.1: formal certification comes from LeanGround, separate from the local
+        // docs/mathdoc.md §4.5: formal certification comes from LeanGround, separate from the local
         // check (which this backend never performs).
         lean_certification: this.certification(n),
       },

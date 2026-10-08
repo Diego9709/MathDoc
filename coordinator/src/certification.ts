@@ -1,4 +1,4 @@
-// The formal-certification dimension of a node's status (plan §7.1), computed from the
+// The formal-certification dimension of a node's status (docs/mathdoc.md §4.5), computed from the
 // database's project boards and the branch's stage 4 proof requests. Local checks are a
 // separate dimension.
 import { leanContentSha256 } from "./contracts.js";

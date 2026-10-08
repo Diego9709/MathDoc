@@ -187,7 +187,7 @@ export class Worker {
     return cert;
   }
   /**
-   * Plan §7.3: register definition nodes (dependencies first), resolve every theorem
+   * docs/mathdoc.md §4.7: register definition nodes (dependencies first), resolve every theorem
    * node's statement, and submit nodes that carry a proof (sketches when they have
    * premise nodes). Nodes whose proof is `sorry` stay open goals with a prove task.
    * A branch whose root resolves to another goal than `expectedRoot` submits nothing.
@@ -555,7 +555,7 @@ export class Worker {
             throw e;
           }
         }
-        // Plan §9: a changed statement must not keep showing an old certification. Each
+        // docs/mathdoc.md §4.9: a changed statement must not keep showing an old certification. Each
         // attached branch is checked against its own document.
         const stale: Record<string, { stale: boolean; version?: string }> = {};
         if (this.terminus)
@@ -878,7 +878,7 @@ export async function resolveProject(
   const response = await lean.call(`/v1/bases/${baseKey}`);
   const base = z.record(z.unknown()).parse(response.base);
   const { fingerprint: _, ...baseInput } = base;
-  // The identity-bound resolve (plan §12); without definitions it yields the same
+  // The identity-bound resolve (docs/mathdoc.md §4.10); without definitions it yields the same
   // GoalKey as the legacy /v1/goals/resolve.
   const resolved = await lean.fact("resolve", {
     base: baseInput,

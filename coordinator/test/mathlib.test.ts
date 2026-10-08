@@ -1,4 +1,4 @@
-// Plan §11 / stage 5 precondition: the node conversion on a Mathlib base. Exercises the
+// Migration stage 5 precondition (docs/mathdoc.md §3.2): the node conversion on a Mathlib base. Exercises the
 // shapes the Init scenario does not: a structure with parameters and a Mathlib class
 // argument, `extends`, a noncomputable definition over ℝ, `lemma`, Mathlib instances
 // used implicitly, and a context command fixed by the proof environment. Runs when the

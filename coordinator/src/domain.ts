@@ -162,7 +162,7 @@ export interface Board {
   request?: ProofRequest;
   nodes?: Record<string, NodeBinding>;
   writebacks?: Record<string, Writeback>;
-  /** Project boards (docs/coordination-project-model.md): one per database and environment. */
+  /** Project boards (docs/mathdoc.md §2.3): one per database and environment. */
   project?: ProjectScope;
   branches?: Record<string, BranchState>;
 }
@@ -845,7 +845,7 @@ export function command(
       owner(b, actor);
       requireThat(b.runs[c.run]?.status === "certified", "not_certified");
       if (b.project) {
-        // Plan §9: a changed statement keeps old results in history but never certifies
+        // docs/mathdoc.md §4.9: a changed statement keeps old results in history but never certifies
         // the new version. Writeback re-checks every node before committing.
         requireThat(
           !attached(b, b.runs[c.run].branch).request.stale,

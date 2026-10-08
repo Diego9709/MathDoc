@@ -1,4 +1,4 @@
-// Access tokens identify the author of every request (plan §6.3). The token stays in
+// Access tokens identify the author of every request (docs/mathdoc.md §4.3). The token stays in
 // this browser profile; a 401 response clears it and returns to the sign-in page.
 const KEY = "mdc-access-token";
 

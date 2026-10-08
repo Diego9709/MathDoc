@@ -1,4 +1,4 @@
-// Collaboration API (plan §6.3): the same /api/coordination endpoints serve people and
+// Collaboration API (docs/mathdoc.md §4.3): the same /api/coordination endpoints serve people and
 // agents. Commands carry the project revision (If-Match) and an idempotency key.
 import { fetchJson } from "./api";
 import { projectName } from "./project-path";

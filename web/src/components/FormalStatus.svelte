@@ -9,7 +9,7 @@
     derivable: "Derivable", certified: "Certified",
     stale: "Changed since submission", rejected: "Not accepted",
   };
-  // Two dimensions (plan §7.1): a local check is only an editing aid; certification comes
+  // Two dimensions (docs/mathdoc.md §4.5): a local check is only an editing aid; certification comes
   // from LeanGround. The legacy backend reports only the local check.
   const text = $derived.by(() => {
     if (certification === undefined) return labels[status];

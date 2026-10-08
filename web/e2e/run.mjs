@@ -60,7 +60,7 @@ async function startBackend() {
     if (child.exitCode !== null || Date.now() > deadline) throw new Error(`backend did not start:\n${log}`);
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  // The collaboration worker runs next to the API, as in a deployment (plan §8).
+  // The collaboration worker runs next to the API, as in a deployment (docs/mathdoc.md §4.1).
   const worker = spawn(tsx, ["coordinator/src/main.ts", "worker"], { cwd: repoRoot, env: processEnv, stdio: ["ignore", "pipe", "pipe"] });
   worker.stdout.on("data", collect);
   worker.stderr.on("data", collect);
@@ -1080,7 +1080,7 @@ await test('Lean blocks are source editors certified by LeanGround, without loca
       assert.ok(colors.length >= 2, 'Lean has syntax colors');
       assert.equal(await page.locator('iframe').count(), 0, 'no native Lean editor frame');
       assert.equal(await page.getByRole('button', {name: 'Start Lean server'}).count(), 0);
-      // Two dimensions (plan §7.1): no local check, and not yet submitted to LeanGround.
+      // Two dimensions (docs/mathdoc.md §4.5): no local check, and not yet submitted to LeanGround.
       const status = page.getByRole('region', {name: 'current node'}).getByLabel(/^Lean: /);
       assert.equal(await status.getAttribute('aria-label'), 'Lean: Not submitted to LeanGround');
       // Editing and saving still work, and write only the block.
@@ -1101,7 +1101,7 @@ await test('Lean blocks are source editors certified by LeanGround, without loca
   } finally { await browser.close(); }
 });
 
-// Plan §10 stage 4 in the browser: needs a real LeanGround (LEANGROUND_SERVER_URL,
+// Migration stage 4 (docs/mathdoc.md §3.2) in the browser: needs a real LeanGround (LEANGROUND_SERVER_URL,
 // LEANGROUND_FACT_TOKEN) whose base key MDC_E2E_BASE_KEY (default 1) contains Nat.
 await test('a Lean node is submitted to LeanGround, assembled and written back from the collaboration views', {timeout: 240000, skip: !env.LEANGROUND_SERVER_URL && 'needs a LeanGround server (LEANGROUND_SERVER_URL)'}, async () => {
   const browser = await launchBrowser();

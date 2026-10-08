@@ -1,5 +1,5 @@
 // Proof environments and the conversion of document nodes into LeanGround requests
-// (plan §5, §7.2, §7.3; contracts mathdoc.proof-environment.v1 and
+// (docs/mathdoc.md §4.2, §4.7, §4.9; contracts mathdoc.proof-environment.v1 and
 // mathdoc.declaration-binding.v1). Environments live in PostgreSQL next to, never inside,
 // the legacy Project/lean document.
 import { createHash } from "node:crypto";
@@ -30,7 +30,7 @@ import { trustSchema } from "./domain.js";
 import type { Node } from "./docs/model.js";
 
 // mdc_environment keeps the per-branch environments of stage 4 (read only); a project's
-// environment is per database (docs/coordination-project-model.md, decision A).
+// environment is per database (docs/mathdoc.md §2.6, project decision A).
 export const ENVIRONMENT_MIGRATION = `
 CREATE TABLE IF NOT EXISTS mdc_environment(database text NOT NULL, branch text NOT NULL, body jsonb NOT NULL, PRIMARY KEY(database, branch));
 CREATE TABLE IF NOT EXISTS mdc_project_environment(database text PRIMARY KEY, body jsonb NOT NULL);
