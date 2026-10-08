@@ -3,7 +3,7 @@
 状态：2026-10-08 整理。本文取代 `docs/` 下原有的 10 份规划、阶段报告与规范文档（见附录 A），是 MathDoc 唯一的
 内部规划文档。面向用户的英文参考在文档站 `docs/src/content/docs/`，不在本文范围内。
 
-对应代码：主要工作分支 `codex/mathdoc-coordination`，项目阶段 2 在分支 `claude/mdc-verbs`（§3.5）；LeanGround `main` 的 `3965273`。
+对应代码：主要工作分支 `codex/mathdoc-coordination`；LeanGround `main` 的 `3965273`。
 
 ## 1. 本文与阅读方法
 
@@ -430,7 +430,7 @@ Project（= 一个 TerminusDB 数据库）
 | 迁移阶段 5：切换默认入口、删除 Rust 应用 | 已实现，待评审 | 2026-09-29 | `d8abcb9`、`cc8ef1f`（合并 `main`） |
 | Project 模型与工作文件规范（设计） | 已决定 A–F、G1–G4 | 2026-10-01/02 | `d7a1ff3`、`cb850d2` |
 | 项目阶段 1：共享看板 | 已实现，待评审 | 2026-10-02 | `dc2f143`、`3a1c668`、`99060b4`、`2d9fa39` |
-| 项目阶段 2：`mdc` 动词层 | 已实现，待评审；未在真实 LeanGround 上运行 | 2026-10-08 | 分支 `claude/mdc-verbs`（§3.5） |
+| 项目阶段 2：`mdc` 动词层 | 已实现，待评审；未在真实 LeanGround 上运行 | 2026-10-08 | `ce42e5a`（计划）、`c163316`、`9cb1914`、`23bfa05` |
 | 项目阶段 3–5 | 未开始 | — | — |
 
 「待评审」的意思是：作者已按验收标准自测，还没有经过维护者评审，也没有在真实部署上验收。
@@ -603,12 +603,14 @@ Project（= 一个 TerminusDB 数据库）
 
 | 分支 | 位置 | 说明 |
 |---|---|---|
-| `codex/mathdoc-coordination` | 主工作区，远端 `colab` | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1 和本文。项目阶段 1 的开发分支 `claude/shared-project-board` 已以快进方式并入后删除 |
-| `claude/mdc-verbs` | 工作树 `.claude/worktrees/mdc-verbs`，仅本地 | 项目阶段 2，从 `9b41dd3` 分出，待评审后并入主要工作分支。为了不碰主工作区里他人未提交的改动而单独开发 |
+| `codex/mathdoc-coordination` | 主工作区，远端 `colab` | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1–2 和本文。项目阶段 1、2 的开发分支 `claude/shared-project-board`、`claude/mdc-verbs` 都已以快进方式并入后删除 |
 
 主工作区里另有一组尚未提交的改动（不是本文作者所做）：删除归档原型 `app/` 及其开关 `MDC_APP_DIR`、删除部分 perf 报告，
-并相应修改 `coordinator/src/http.ts`、`config.ts`、`package.json` 等。合并时这组改动原样保留在工作区；在它之上，
-协调层测试 34 项通过、3 项跳过（需要真实 LeanGround），前端测试 29 项通过 [实测，2026-10-08]。
+并相应修改 `coordinator/src/http.ts`、`config.ts`、`package.json` 等。两次合并时这组改动都原样保留在工作区。
+项目阶段 2 合并时，它与本分支都改了 `http.ts`：先用带标签的 stash 只移开 `http.ts` 和 `docs/mathdoc.md` 两个重叠文件，
+快进之后把它对 `http.ts` 的改动应用回去，并核对与原改动逐行相同；`docs/mathdoc.md` 原有的未提交内容即提交 `ce42e5a`。
+在这组改动之上，阶段 2 合并后协调层测试 47 项：43 项通过、4 项跳过（需要真实 LeanGround），`cli` 测试单独运行通过，
+前端测试 29 项通过 [实测，2026-10-08]。所以这组改动与阶段 2 的代码可以共存。
 
 ### 3.6 已知问题
 
