@@ -362,8 +362,7 @@ Project（= 一个 TerminusDB 数据库）
 
 | 分支 | 位置 | 说明 |
 |---|---|---|
-| `codex/mathdoc-coordination` | 主工作区 | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1 和本文；尚未推送到远端 `colab` |
-| `claude/shared-project-board` | `.claude/worktrees/shared-project-board` | 项目阶段 1 的开发分支，已以快进方式全部并入上一行，可以删除 |
+| `codex/mathdoc-coordination` | 主工作区，远端 `colab` | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1 和本文。项目阶段 1 的开发分支 `claude/shared-project-board` 已以快进方式并入后删除 |
 
 主工作区里另有一组尚未提交的改动（不是本文作者所做）：删除归档原型 `app/` 及其开关 `MDC_APP_DIR`、删除部分 perf 报告，
 并相应修改 `coordinator/src/http.ts`、`config.ts`、`package.json` 等。合并时这组改动原样保留在工作区；在它之上，
