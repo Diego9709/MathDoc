@@ -1,6 +1,8 @@
 // Shared by the tests that run against a real LeanGround, TerminusDB and PostgreSQL.
 // They are skipped unless MDC_TEST_DATABASE_URL, MDC_TEST_TERMINUS_URL,
 // MDC_TEST_TERMINUS_PASSWORD, MDC_TEST_LEANGROUND_URL and MDC_TEST_LEANGROUND_TOKEN are set.
+// MDC_TEST_LEANGROUND_ACTOR names the token's LeanGround actor (default `coordinator`);
+// the coordinator registers it as a member of every LeanGround project (§4.10).
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -21,6 +23,7 @@ export const env = {
   lean: process.env.MDC_TEST_LEANGROUND_URL,
   leanToken: process.env.MDC_TEST_LEANGROUND_TOKEN,
 };
+const leanActor = process.env.MDC_TEST_LEANGROUND_ACTOR ?? "coordinator";
 export const ready = Object.values(env).every(Boolean);
 
 export const actors = {
@@ -64,7 +67,7 @@ export async function deploy(
     actors,
     leanUrl: leanground.url,
     leanToken: leanground.token,
-    leanActor: "coordinator",
+    leanActor,
     terminusUrl: env.terminus,
     terminusUser: "admin",
     terminusPassword: env.terminusPassword,
@@ -79,13 +82,7 @@ export async function deploy(
     user: "admin",
     password: env.terminusPassword!,
   });
-  const worker = new Worker(
-    store,
-    lean,
-    new Documents(),
-    "coordinator",
-    terminus,
-  );
+  const worker = new Worker(store, lean, new Documents(), leanActor, terminus);
   return {
     store,
     base,

@@ -109,7 +109,7 @@ async function flow(leanground: { url: string; token: string }) {
     const file = pulled.file as string;
     assert.equal(file, `${p.root.slice(0, 8)}-double_add.lean`);
     const text = await readFile(join(dir, file), "utf8");
-    assert.ok(text.includes("import Init\n"));
+    assert.ok(text.includes(`import ${p.base.root_module}\n`));
     assert.ok(text.includes(`-- definition double (`));
     assert.ok(text.includes(D));
     p = await http.project(id);
@@ -179,14 +179,53 @@ async function flow(leanground: { url: string; token: string }) {
     assert.equal(p.goals[sub.goal].declaration!.name, "double_eq");
     assert.equal(p.goals[sub.goal].statement, "double_eq");
     // Goals record only definitions LeanGround reports as referenced, never IDs from a request:
-    // drafts return their source.
+    // drafts return their source. The coordinator can see another project's definition (it is
+    // a member of every project), so a member names one in a resolve of this project's goal.
     const defined = p.goals[sub.goal].definitions!;
     assert.equal(defined.length, 1);
+    const other = `${db}x`;
+    const otherHttp = client(() => dep, other);
+    await otherHttp.ok("alice", "POST", "/api/projects", {
+      action: "init",
+      name: other,
+    });
+    const secret = await otherHttp.node(
+      "secret",
+      "def secret_value : Nat := 42\n",
+    );
+    const otherRoot = await otherHttp.node(
+      "secret_fact",
+      "theorem secret_fact : secret_value = 42 := sorry\n",
+      [secret],
+    );
+    await otherHttp.ok(
+      "alice",
+      "PUT",
+      `/api/coordination/environments/${other}`,
+      { base_key: 1 },
+    );
+    const otherId = (
+      await otherHttp.ok(
+        "alice",
+        "POST",
+        "/api/coordination/projects",
+        {
+          document: { database: other, branch: "main", node: otherRoot },
+          budget: 1,
+        },
+        { "idempotency-key": "create-other" },
+      )
+    ).id as string;
+    await dep.drain();
+    const foreign = (await otherHttp.project(otherId)).branches!.main.nodes[
+      secret
+    ].definition_ids![0];
+    assert.ok(foreign && !defined.includes(foreign));
     await http.done(id, "bob", {
       type: "resolve",
       goal: sub.goal,
       proposition: "∀ (n : Nat), double n = n + n",
-      definitions: [...defined, "f".repeat(64)],
+      definitions: [...defined, foreign],
     });
     p = await http.project(id);
     assert.deepEqual(p.goals[sub.goal].definitions, defined);
