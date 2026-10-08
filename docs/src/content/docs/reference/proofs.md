@@ -143,14 +143,16 @@ requests of earlier versions refuse every command (`project_superseded`,
 | `task` | owner | `goal`, `kind` (`prove`/`decompose`/`formalize`), `priority` | Add a task. |
 | `claim` | member | `task`, `allocation`, `ttl` | Take a lease ([Collaboration](../../concepts/collaboration/#tasks-leases-and-budgets)). |
 | `heartbeat` | lease holder | `attempt`, `epoch`, `ttl` | Extend the lease. |
-| `finish` | lease holder | `attempt`, `epoch`, `spent`, `outcome` | End the attempt. |
+| `finish` | lease holder | `attempt`, `epoch`, `spent`, `outcome`, `note?` | End the attempt; a note is kept on the task's goal. |
+| `note` | member | `goal`, `text` (1–500 characters) | Keep a note on a goal; the latest 50 stay. |
 | `resolve` | member | `goal`, `proposition`, `definitions` | Queued: give a known GoalKey its statement. |
 | `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions`, `description?` | Queued: submit a proof or sketch; a sketch's new premises get their statements ([below](#new-subgoals)). |
 | `submit_node` | member | `node`, `branch` | Queued: resubmit a theorem node of an attached branch. |
 | `attach` | member, `editor` on the branch | `branch` | Queued: convert the branch from the root node (again). |
 | `import` | member | `certificate` | Queued: bring a shared certificate into the project. |
 | `sync` | member | — | Queued: sync now. |
-| `decomposition` | owner | `certificate`, `state` (`active`/`paused`/`retired`) | Change a certificate's state. |
+| `decomposition` | owner | `certificate`, `state` (`active`/`paused`/`retired`), `comment?` | Change a certificate's state; reviewing a `proposed` one is setting it `active` or `retired`. Recorded as the certificate's `review`. |
+| `policy` | owner | `review` (`required`/`none`) | Whether new decompositions wait for review ([Review](../../concepts/collaboration/#review)). Project boards only. |
 | `pick` | owner | `branch`, `goal`, `certificate` (or `null`) | Set or clear the branch's pick for a goal (`certificate_goal_mismatch`). |
 | `assemble` | owner | `component` (`lean-worker`), `branch` | Queued: assemble the branch's route. |
 | `retry` | owner | `run` | Queued: retry a failed, retryable assembly with the same plan. |
@@ -161,7 +163,10 @@ requests of earlier versions refuse every command (`project_superseded`,
 `submit` only when the conclusion uses a definition introduced by
 `new_definitions` in the same submission.
 `description` (up to 2000 characters) says what a decomposition does; it is
-kept on the certificate (`facts.ID.description`). Agents usually submit through
+kept on the certificate (`facts.ID.description`), with the `submitter` and
+`submitted_at`. A decomposition submitted this way is `proposed` until the owner
+reviews it, unless the project's `policy` waives review; its `submit` job result
+has its `state`. Agents usually submit through
 [`mdc prove` and `mdc split`](../workspace-commands/#proof-work).
 
 ### New subgoals

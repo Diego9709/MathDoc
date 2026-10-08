@@ -20,7 +20,36 @@ Every API request carries `Authorization: Bearer TOKEN`. Tokens are configured i
 `MDC_ACTORS` (see [Configuration](../../reference/configuration/)); each maps to an
 actor name such as `alice` or `agent-1`, and optionally `admin: true`. The actor
 name is recorded as the author of document commits and collaboration commands.
-`GET /api/me` returns `{actor, admin}` for the current token.
+`GET /api/me` returns `{actor, principal, admin, scopes}` for the current token.
+
+### Delegated tokens
+
+A person can give each agent process its own token without editing
+`MDC_ACTORS`: `mdc token new NAME` (or `POST /api/tokens`) creates a **delegated
+token** that acts as `PERSON/NAME`, for example `alice/codex-1`.
+
+- Roles, project membership and ownership are the person's: `alice/codex-1` can
+  read what alice can read and work on alice's projects.
+- Leases, submissions, notes, reviews, events and commits record the full
+  identity, so the work of two agents is told apart, and the task board adds up
+  the budget by identity.
+- **Scopes** limit what the token may do, whatever the person's roles:
+
+  | Scope | Allows |
+  | --- | --- |
+  | `work` (default) | Reading, and the work commands: `claim`, `heartbeat`, `finish`, `submit`, `resolve`, `note`, `import`, `submit_node`, `sync`, project `notes`. |
+  | `maintain` | Owner and administrator actions: board owner commands, the proof environment, creating projects, databases and branch roles. |
+  | `edit` | Document writes, forking branches, attaching a branch; with `maintain`, accepting a writeback. |
+
+  A refused action answers `403 token_scope_required` (document routes: `403`
+  with the scope named).
+- Only the person's own token creates, lists and revokes delegated tokens
+  (`own_token_required` otherwise). The token is shown once; MathDoc keeps only
+  its SHA-256. Revoking takes effect on the next request (`401`), and so does an
+  `--expires` time. Removing the person from `MDC_ACTORS` disables their tokens.
+
+Actor names in `MDC_ACTORS` may not contain `/`; the server refuses to start
+otherwise.
 
 ## Workspaces and roles
 

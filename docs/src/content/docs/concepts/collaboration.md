@@ -81,8 +81,8 @@ tasks. Work on a task follows a lease:
    lease; concurrent claims yield one winner.
 2. `heartbeat` extends the lease while working.
 3. `finish` reports what was spent (at most the allocation) and an outcome:
-   `submitted`, `no_progress`, `execution_failed` or `released`. The task becomes
-   ready again.
+   `submitted`, `no_progress`, `execution_failed` or `released`, optionally with
+   a [note](#notes). The task becomes ready again.
 
 A lease that expires is recorded at the next state change: the attempt is marked
 `expired`, charged its whole reservation, and the task becomes ready. Expiry only
@@ -100,15 +100,55 @@ so a participant whose lease was reassigned cannot overwrite the new holder
 A **decomposition** is a conditional certificate for a goal: its source proves
 the goal from new premise statements written as `sorry` theorems, and may
 introduce new definitions. LeanGround's sketch component checks that the
-premises imply the conclusion. New premises arrive in the project as goals with
-only a GoalKey; someone writes out the statement and `resolve`s it before proving
-it ([Agent interface](../../reference/agents/#new-subgoals)).
+premises imply the conclusion, not that the premises are true or easier. New
+premises arrive in the project as goals; MathDoc states each from its
+placeholder in the sketch, so they can be pulled and proved at once
+([New subgoals](../../reference/proofs/#new-subgoals)).
 
-The owner sets each certificate's state. Only `active` certificates count for
-scheduling and assembly: `paused` and `retired` ones stay recorded but are never
-chosen, and either can be made active again. No state deletes a fact. Tasks can
-be claimed only for goals reachable from the root through active certificates
-(otherwise `inactive_goal`).
+Each certificate has a state. Only `active` certificates count for scheduling and
+assembly; tasks can be claimed only for goals reachable from the root through
+active certificates (otherwise `inactive_goal`).
+
+| State | Meaning |
+| --- | --- |
+| `proposed` | A new decomposition waiting for the owner's [review](#review). Recorded, but schedules nothing. |
+| `active` | Used for scheduling, routes and assembly. |
+| `paused` | Kept aside; can be made active again. |
+| `retired` | Not wanted; can still be made active again. |
+
+No state deletes a fact, and no state changes what a goal's status says: a
+proposed or paused decomposition can still make its goal `derivable`.
+
+## Review
+
+Checking a proof needs no person: assembly rechecks the whole route. What does
+need one is whether a decomposition is worth working on, so on a project board:
+
+- a complete proof is `active` at once;
+- a decomposition from a document node (attaching or resubmitting a branch) is
+  `active`, because the branch's editors wrote it;
+- any other decomposition (an agent's or member's `submit`, an `import`, or one
+  found by sync) is `proposed`;
+- a decomposition one of whose premises is the goal itself is `retired` on
+  arrival, since it can never help.
+
+The owner reviews a proposed decomposition with the `decomposition` command,
+setting it `active` or `retired` with an optional comment; in the browser,
+**Decompositions** lists them under **Pending review** with each premise's
+statement, the description given by the submitter, who submitted it and which
+branches' routes can need its goal. The board keeps the last review on the
+certificate. The owner can switch a project to `policy` `review: none`, so that
+new decompositions are active at once; existing ones keep their state.
+Certificates recorded before reviews existed stay active.
+
+## Notes
+
+LeanGround keeps only successful certificates, so what did not work is kept on
+the goal instead: anyone working on it can add a **note** (what was tried, where
+it got stuck), with the `note` command, with `finish`, with `mdc note`, or in the
+browser's **Task board**. Each goal keeps its latest 50 notes of at most 500
+characters. `mdc pull` writes the latest 20 into the goal file, and the task board
+shows them all.
 
 ## Routes and picks
 
@@ -192,9 +232,10 @@ Collaboration never widens document access:
   branch.
 - Every member must be able to read `main`; adding one who cannot fails with
   `member_lacks_document_access`.
-- The owner alone changes members, adds tasks, manages decompositions and picks,
-  assembles, retries and accepts. Members claim tasks, submit, resolve, attach
-  branches they can edit and sync.
+- The owner alone changes members, adds tasks, reviews and manages
+  decompositions, sets the review policy, picks, assembles, retries and accepts.
+  Members claim tasks, submit, resolve, add notes, attach branches they can edit
+  and sync.
 
 Changing members revokes the open leases of removed members (charged their
 reservation).

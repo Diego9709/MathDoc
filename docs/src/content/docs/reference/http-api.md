@@ -8,10 +8,22 @@ The CLI and the browser use the same endpoints.
 ## Authentication
 
 Every `/api/…` and `/p/DB/BRANCH/api/…` request needs
-`Authorization: Bearer TOKEN` with a token from `MDC_ACTORS`; otherwise `401`.
+`Authorization: Bearer TOKEN` with a token from `MDC_ACTORS` or a live
+[delegated token](../../concepts/workspaces/#delegated-tokens); otherwise `401`.
 Document requests also pass the same-origin check
 ([Configuration](../configuration/#reverse-proxy)); a rejected Host or Origin
-gets `403`. `GET /api/me` returns `{actor, admin}`.
+gets `403`. `GET /api/me` returns `{actor, principal, admin, scopes}`; `scopes` is
+`null` for one's own token.
+
+| Method and path | Result |
+| --- | --- |
+| `GET /api/tokens` | Your delegated tokens: `name`, `actor`, `scopes`, `created_at`, `expires_at`, `revoked_at`. |
+| `POST /api/tokens` | Body `{name, scopes?, expires_at?}` (`scopes` default `["work"]`; `expires_at` an ISO time in the future). `201 {token, actor, name, scopes, expires_at}`; the token is not shown again. `409 token_name_taken` while a token of that name is not revoked. |
+| `DELETE /api/tokens/NAME` | Revoke it; `404` if there is no live token of that name. |
+
+These need one's own token (`403 own_token_required`). A delegated token whose
+scopes do not allow an action gets `403 token_scope_required` on collaboration
+routes and `403` naming the scope on document routes.
 
 Access to a branch follows the [workspace roles](../../concepts/workspaces/#workspaces-and-roles).
 Without read access a branch answers `404 project not found`; with too low a

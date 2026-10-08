@@ -2,11 +2,15 @@
 title: Agent interface
 ---
 
-Agents use the same HTTP API and commands as people. An agent is an actor in
-`MDC_ACTORS` with its own token, a role on the database's branches (at least
-`viewer` on `main` to work on tasks, `editor` on a branch to attach it or edit
-its documents) and membership in the database's project
-([Collaboration](../../concepts/collaboration/#projects-and-branches)). This page
+Agents use the same HTTP API and commands as people. An agent acts with a
+token: best a [delegated token](../../concepts/workspaces/#delegated-tokens) of
+the person running it (`mdc token new codex-1`, acting as `you/codex-1` with the
+`work` scope), or an actor of its own in `MDC_ACTORS`. Either way it needs a role
+on the database's branches (at least `viewer` on `main` to work on tasks,
+`editor` on a branch to attach it or edit its documents) and membership in the
+database's project
+([Collaboration](../../concepts/collaboration/#projects-and-branches)); a
+delegated token has its person's. This page
 shows the request flow; placeholders are in capitals and no value here is a real
 token.
 
@@ -15,9 +19,12 @@ token.
 An agent that can run commands needs only four:
 `mdc pull GOAL`, `mdc split FILE -m DESCRIPTION`, `mdc prove FILE` and `mdc done`
 ([Proof work](../workspace-commands/#proof-work)). They claim and renew leases,
-write a goal file with the project's context and definitions, check it locally,
-and make every submission safe to rerun after a lost reply. The rest of this page
-is the HTTP flow underneath, for agents that call the API directly.
+write a goal file with the project's context, definitions and the goal's notes,
+check it locally, and make every submission safe to rerun after a lost reply.
+`mdc note` (or `mdc done --note`) leaves what you learned for the next agent.
+Chat clients without a shell use the same verbs as tools of `mdc mcp`
+([MCP](../workspace-commands/#mcp)). The rest of this page is the HTTP flow
+underneath, for agents that call the API directly.
 
 ## Conventions
 
@@ -113,7 +120,9 @@ EOF
 Use `lean-worker` with `leaf` for a proof without `sorry` premises and
 `lean-worker-sketch` with `sketch` otherwise. `definitions` lists the definition
 IDs the source uses (take them from the draft). `description` is optional and
-says what a decomposition does. The worker submits to LeanGround and, if the
+says what a decomposition does; the owner sees it when reviewing. A sketch is
+`proposed` until the owner activates it ([Review](../../concepts/collaboration/#review)),
+so its new subgoals cannot be claimed before that. The worker submits to LeanGround and, if the
 certificate is accepted, adds it to the board's `facts`; goal statuses update
 accordingly. Keep the idempotency key and revision until you have the reply: if
 it is lost, resend the same request with both, and you get the first result.
@@ -127,7 +136,8 @@ curl -s -X POST "$P/commands" -H "$AUTH" -H 'Content-Type: application/json' \
 ```
 
 `spent` may not exceed the allocation; `outcome` is `submitted`, `no_progress`,
-`execution_failed` or `released`. The task becomes ready again, for the next
+`execution_failed` or `released`. Add `"note": "…"` to keep what you learned on
+the goal (or send `{"type": "note", "goal": GOAL_KEY, "text": "…"}` at any time). The task becomes ready again, for the next
 attempt or for others, until its goal is certified.
 
 ## New subgoals
@@ -137,7 +147,9 @@ on the board as goals with a `prove` task each, and the `submit` job states each
 new one from its placeholder in the sketch
 ([New subgoals](../proofs/#new-subgoals)): the goal gets an `identity` and a
 `declaration`. The job's `result` (`GET $P/jobs/JOB_ID`) lists every premise with
-its name and whether its statement was `resolved`.
+its name and whether its statement was `resolved`, and the sketch's `state`: a
+`proposed` sketch's subgoals cannot be claimed (`inactive_goal`) until the owner
+activates it.
 
 To prove one, get its goal draft, which works for any goal with a statement, not
 only for document nodes:

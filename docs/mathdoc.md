@@ -64,7 +64,7 @@ MathDoc 是数学知识的协作应用。它负责提出问题、组织协作、
 | 把文档节点转换为 LeanGround 请求，并把结果回写文档 | 本地 Lean：已从默认构建与部署中移除 |
 | 身份与文档权限 | 与 EvoHarness 的集成（不在本轮范围） |
 
-本文只描述 `codex/mathdoc-coordination` 及由它派生的分支（§3.5）：TypeScript 后端，证明交给 LeanGround。
+本文只描述 `codex/mathdoc-coordination` 及由它派生的分支（§3.7）：TypeScript 后端，证明交给 LeanGround。
 `main` 上的旧 Rust 应用不在本文范围内。
 
 ### 2.2 分工
@@ -136,9 +136,9 @@ Project（= 一个 TerminusDB 数据库）
    - 拆法是否值得做。草图检查只保证「子目标全真 ⇒ 目标真」，不保证子目标为真，也不保证子目标更容易。
      拆法新引入的定义不需要做忠实性审阅（最终组装的结论是根陈述）[推断]。
 2. **拆法有生命周期，类似合并请求（PR）**：`proposed` → `active` → `paused` / `retired` / `refuted`。
-   新拆法默认 `proposed`，未经审阅不参与调度（项目决定 B）。**尚未实现**：现在认证进入看板就是 `active`。
+   新拆法默认 `proposed`，未经审阅不参与调度（项目决定 B）。项目阶段 3 已实现（§3.5）；`refuted` 属于阶段 5。
 3. **证否是必需品。** 证出 ¬P 后，含 P 的拆法自动标为 `refuted`。需要 LeanGround 侧的契约，**尚未实现**。
-4. **共享失败记忆。** LeanGround 按设计不保存失败尝试；协调层给每个目标挂尝试笔记（试了什么、卡在哪个证明目标）[推断：对 Agent 群体最省预算]。**尚未实现**。
+4. **共享失败记忆。** LeanGround 按设计不保存失败尝试；协调层给每个目标挂尝试笔记（试了什么、卡在哪个证明目标）[推断：对 Agent 群体最省预算]。项目阶段 3 已实现（§3.5）。
 5. **租约只用来减少重复，不是独占权。** 过期后才交上来的正确证明照样接收（已实现）。
 6. **形式图由认证推导，不手工维护。** 「且」边来自草图的前提；手工维护的依赖边只保留给非形式化的知识依赖。
 7. **调度信号来自图**：被多少条路线需要、所在路线离闭合还差多少、已失败几次。**尚未实现**（`mdc next`）。
@@ -155,6 +155,7 @@ Project（= 一个 TerminusDB 数据库）
   所以断网重试会重复提交。
 - 第一批动词 `pull / prove / split / done` 已在项目阶段 2 实现（§3.4）：它们封装了修订号、幂等键、续租和 GoalKey 解析；
   拆法产生的子目标由服务端自动登记陈述，不再需要手写。
+- 项目阶段 3 加了 `mdc note FILE|GOAL -m 文字` 和 `mdc done --note`；`split --wait` 报告拆法的状态（通常是 `proposed`）。
 
 **动词层**（项目阶段 2）：在现有命令之上，加一层以证明工作流命名的命令。第一批：
 
@@ -168,15 +169,16 @@ Project（= 一个 TerminusDB 数据库）
 之后的动词：
 
 - `mdc check FILE`：只检查不入库，等 LeanGround 提供接口（项目决定 E）；
-- `mdc goals`、`mdc next`、`mdc show`、`mdc note`；
+- `mdc goals`、`mdc next`、读取单个目标（含笔记与拆法）的命令；`mdc show` 已是显示文档节点的命令，所以要另起名字
+  （项目阶段 3 决定 5）；
 - 维护者用的 `mdc review` 和 `mdc branch new --pick`。
 
 工程性质：
 
 - 默认输出 JSON，错误码稳定；失败时 stderr 输出一行 JSON `{reason, status?, details?, uncertain?}`；
 - `.mdc/` 只保存重放记录，不保存令牌；
-- 每个 Agent 使用自己的委托子令牌（阶段 4）；
-- `mdc mcp` 把同一组动词暴露为 MCP 工具（MCP 即 Model Context Protocol，让聊天式 Agent 调用外部工具的标准协议）。
+- 每个 Agent 使用自己的委托子令牌（阶段 4 已实现：`mdc token new/list/revoke`）；
+- `mdc mcp` 把同一组动词暴露为 MCP 工具（MCP 即 Model Context Protocol，让聊天式 Agent 调用外部工具的标准协议；阶段 4 已实现）。
 
 **浏览器侧栏 Agent 暂缓实现**（项目决定 F）。以后实现时遵守三条约束：身份是用户的委托子令牌，工具只有 `mdc` 动词，
 维护者级操作只生成待确认按钮。
@@ -258,6 +260,42 @@ Project（= 一个 TerminusDB 数据库）
 9. **工作区记住服务器**：`.mdc/workspace.json` 记录服务器地址，在工作区内运行动词时可以不设 `MDC_URL`；
    设了而不一致时拒绝（`workspace_server_mismatch`）。
 
+**项目阶段 3 实现中定下、待评审的细节**（2026-10-08）：
+
+1. **默认状态**采用 §2.7.3 的倾向：完整证明直接 `active`；从文档节点（挂载、重新提交）来的草图 `active`；
+   其余草图（`submit`、`import`、同步时发现的）`proposed`；前提含结论自身的认证到达即 `retired`（记 `retired_reason`）。
+   同步时发现、没有经 MathDoc 提交的草图也是 `proposed`，因为不知道是谁写的。
+2. **只对项目看板审阅**：没有 `project` 的原型看板与旧请求看板一律 `active`，行为不变。已有的认证保持原状态。
+3. **审阅只限 owner**，不设审阅者名单；`decomposition` 命令带可选 `comment`，看板在认证上记最后一次审阅
+   （`review`：谁、何时、改成什么、意见）。任何状态都不能改回 `proposed`。
+4. **审阅策略**：新命令 `policy {review: required | none}`，只限 owner、只限项目看板；字段缺省视为 `required`（项目决定 B）。
+   改成 `none` 只影响之后到达的认证。
+5. **笔记的读取**：§2.7.3 说「`mdc show` 也显示」，但 `mdc show REF` 已是显示文档节点的命令。本阶段不新增读取命令：
+   笔记在 `pull` 写出的文件前段、界面任务板和看板 JSON（`mdc proof status`）里可见。
+6. **笔记的位置**：挂在目标上（`goals.KEY.notes`），与看板原有的项目备注 `notes` 分开；每条记操作者、时间，
+   来自 `finish` 的另记尝试 ID。`mdc note` 的幂等键由目标、文字和修订号决定，回复丢失后重跑可能多记一条 [推断：影响小]。
+7. **界面**：「被几条路线需要」按分支计算：从根出发、只经 `active` 认证、在已选择的目标上只走所选认证，能到达该目标的分支。
+   任务板把这样到不了的目标标为 inactive，并禁用领取；`proposed` 的认证不显示「Use on this branch」。
+
+**项目阶段 4 实现中定下、待评审的细节**（2026-10-08）：
+
+1. **子令牌默认只有 `work`**，不给 `edit`（§2.7.4 的待定项，按倾向定）。
+2. **各命令所需的权限范围**：§2.7.4 只列了 `work` 的一部分，其余这样定：`sync`、`import`、`submit_node`、项目备注 `notes` 属于 `work`；
+   `attach` 属于 `edit`（它要求分支的 editor 权限）；`policy` 与其他 owner 命令属于 `maintain`；`accept` 会写文档，要 `maintain` 加 `edit`。
+3. **文档接口与目录操作的权限范围**：分支接口里 read、history、export 之外的动作和分叉分支要 `edit`；目录操作中 `new_branch` 要 `edit`，
+   `init`、`remove`、`delete_branch`、`grant`、`set_owner` 要 `maintain`；设置证明环境要 `maintain`；
+   通过 `POST /projects` 挂载分支要 `edit`，建项目另要 `maintain`。管理员权限要求主身份是管理员且令牌有 `maintain`。
+4. **只有本人令牌能管理子令牌**：子令牌不能再创建、列出或撤销令牌（`own_token_required`），所以权限不能借子令牌扩散。
+   主身份从 `MDC_ACTORS` 删除后，它的子令牌一律无效。
+5. **令牌格式与存储**：`mdct_` 加 32 字节随机数（base64url）；数据库只存 SHA-256；同一主身份下未撤销的令牌名字唯一，
+   过期但未撤销的令牌仍占着名字。
+6. **`MDC_ACTORS` 的名字不得含 `/`**：`/` 用来分隔主身份和令牌名，否则名为 `alice/x` 的操作者会被当成 alice。服务启动时检查。
+7. **`/api/me`** 增加 `principal` 和 `scopes`；界面按主身份和 `maintain` 判断是否显示 owner 操作。
+8. **`mdc mcp`** 手写了 MCP 的标准输入输出传输（逐行 JSON-RPC 2.0），没有引入 MCP SDK 依赖；工具是 `pull`、`prove`、`split`、`done`、`note`。
+   工作文件和 `.mdc/` 记录放在服务自己的目录里，`prove`/`split` 只接受 `pull` 给出的文件名。工具失败时返回 `isError` 的结果，不返回协议错误。
+9. **预算**：看板数据本来就按完整身份记录尝试，界面在任务板上按身份汇总花费和预留额，服务端没有另存汇总。
+10. **LeanGround 侧不变**：`caller_ref` 仍是作业 ID，没有写入 Agent 身份；Agent 的来源只记在 MathDoc。
+
 ### 2.7 路线图
 
 迁移阶段 0–5 已经完成（§3.2），后续工作按项目阶段推进。下表回答：每个阶段做什么、怎样算完成。
@@ -266,8 +304,8 @@ Project（= 一个 TerminusDB 数据库）
 |---|---|---|---|
 | 1 共享看板 | 环境和看板改为按数据库；分支是路线；节点状态按 GoalKey 读共享看板；旧请求只读 | 两个分支选不同的根拆法、共用引理 B：一个分支证出 B 后，另一分支的 B 节点同时显示已证出，不需要导入；旧请求可读、拒绝命令 | 已实现，待评审；本机 LeanGround 上的验收测试通过（§3.3） |
 | 2 `mdc` 动词层 | `pull / split / prove / done`、`.mdc/` 重放、自动续租、服务端按目标生成草稿、自动 `resolve`；`check` 等 LeanGround 接口 | 断网重试不重复提交；一个 Agent 只用这四个动词就能把一个目标拆开并证完 | 已实现，待评审；本机 LeanGround 上的验收测试通过（§3.4） |
-| 3 审阅 | `proposed` 状态、审阅视图、尝试笔记 | `proposed` 的拆法不产生可领取的任务，启用后才产生 | 未开始 |
-| 4 Agent 身份 | 委托子令牌、`mdc mcp` | 两个命令行 Agent 各用自己的子令牌：审计记录可以区分，子令牌无法执行维护者命令 | 未开始 |
+| 3 审阅 | `proposed` 状态、审阅视图、尝试笔记 | `proposed` 的拆法不产生可领取的任务，启用后才产生 | 已实现，待评审；本机 LeanGround 上的验收测试通过（§3.5） |
+| 4 Agent 身份 | 委托子令牌、`mdc mcp` | 两个命令行 Agent 各用自己的子令牌：审计记录可以区分，子令牌无法执行维护者命令 | 已实现，待评审；替身上验收测试通过，真实 LeanGround 上未运行（§3.6） |
 | 5 规模与证否 | 看板拆表、证否、`mdc next` 调度 | 参与者数、目标数和写入延迟的目标值在本阶段开始前定下 | 未开始 |
 
 下面 §2.7.1–§2.7.6 是各阶段的要点：目标、改动、关键设计、验收、待定事项。凡涉及现有代码的地方都核对过 [实测：读代码，
@@ -280,7 +318,7 @@ Project（= 一个 TerminusDB 数据库）
 - **主工作区里那组未提交的改动**（删除 `app/` 原型）要由它的作者提交。否则之后的每次提交都得用路径限定，避开它。
 
 2026-10-08 开始阶段 2 时，这两项都没有完成：没有 LeanGround 令牌，所以阶段 1 的真实验收没有运行；那组改动仍未提交，
-其中也改了 `coordinator/src/http.ts`。所以阶段 2 在单独的工作树和分支 `claude/mdc-verbs` 上开发（§3.5），主工作区保持原样。
+其中也改了 `coordinator/src/http.ts`。所以阶段 2 在单独的工作树和分支 `claude/mdc-verbs` 上开发（§3.7），主工作区保持原样。
 同日阶段 2 合并之后，用本机 LeanGround 服务补跑了阶段 1 的三项真实验收，全部通过（§3.3）；那组改动仍未提交。
 
 #### 2.7.2 阶段 2：`mdc` 动词层
@@ -325,8 +363,8 @@ Project（= 一个 TerminusDB 数据库）
 | 改动 | 要点 |
 |---|---|
 | 认证状态增加 `proposed` | 选路、可领取目标的判断和组装本来就只看 `active` 的认证 [实测：`activeGoals`、`selectRoute` 都过滤 `state === "active"`]，所以 `proposed` 自动不参与调度，不需要改选路代码 |
-| 默认状态规则（待定） | 倾向：完整证明直接 `active`，因为它不存在「值不值得做」的问题；Agent 用 `submit` 交的草图默认 `proposed`；挂载或重新提交文档节点得到的草图默认 `active`，因为该分支的 editor 已经对文档内容负责 [推断]。允许项目设置为全部直接 `active` |
-| 审阅命令 | 复用 `decomposition` 命令，允许从 `proposed` 转为 `active` 或 `retired`，并附审阅意见。只有 owner 能审；是否增设审阅者名单，待定 |
+| 默认状态规则（已定，见 §2.6 项目阶段 3 决定 1–2） | 倾向：完整证明直接 `active`，因为它不存在「值不值得做」的问题；Agent 用 `submit` 交的草图默认 `proposed`；挂载或重新提交文档节点得到的草图默认 `active`，因为该分支的 editor 已经对文档内容负责 [推断]。允许项目设置为全部直接 `active` |
+| 审阅命令 | 复用 `decomposition` 命令，允许从 `proposed` 转为 `active` 或 `retired`，并附审阅意见。只有 owner 能审；是否增设审阅者名单，待定（已定：不设，§2.6 项目阶段 3 决定 3） |
 | 提交者与说明 | 吸收认证时记录提交者（现在没有记录 [实测]）和阶段 2 的拆法说明 |
 | 无意义拆法自动处理 | 前提里包含结论自身的认证（T ⇐ {T}），直接记为 `retired`，不进入审阅队列 |
 | 尝试笔记 | 新命令 `note {goal, text}`；`finish` 也可以附一条笔记。每个目标保留最近 50 条，每条最多 500 字符（与 §4.11 G2 一致）。`mdc pull` 把笔记写进文件前段；`mdc show` 和任务板也显示 |
@@ -372,7 +410,7 @@ Project（= 一个 TerminusDB 数据库）
 - 修改成员名单时，只要主身份仍是成员，其子令牌的租约不被撤销；
 - 一个脚本化的 MCP 客户端完成 `pull` → `prove`。
 
-**待定**：子令牌是否默认可以写文档（倾向默认不给 `edit`）。
+**待定**：子令牌是否默认可以写文档（倾向默认不给 `edit`）。已定：不给（§2.6 项目阶段 4 决定 1）。
 
 #### 2.7.5 阶段 5：规模与证否
 
@@ -434,7 +472,9 @@ Project（= 一个 TerminusDB 数据库）
 | Project 模型与工作文件规范（设计） | 已决定 A–F、G1–G4 | 2026-10-01/02 | `d7a1ff3`、`cb850d2` |
 | 项目阶段 1：共享看板 | 已实现，待评审；本机 LeanGround 上验收测试通过（2026-10-08） | 2026-10-02 | `dc2f143`、`3a1c668`、`99060b4`、`2d9fa39` |
 | 项目阶段 2：`mdc` 动词层 | 已实现，待评审；本机 LeanGround 上验收测试通过 | 2026-10-08 | `ce42e5a`（计划）、`c163316`、`9cb1914`、`23bfa05` |
-| 项目阶段 3–5 | 未开始 | — | — |
+| 项目阶段 3：审阅 | 已实现，待评审；本机 LeanGround 上验收测试通过 | 2026-10-08 | `0891371`、`0e07f5a` 及其后的文档提交（与阶段 4 合在同一组提交） |
+| 项目阶段 4：Agent 身份 | 已实现，待评审；真实 LeanGround 上未运行 | 2026-10-08 | `0891371`、`0e07f5a` 及其后的文档提交 |
+| 项目阶段 5 | 未开始 | — | — |
 
 「待评审」的意思是：作者已按验收标准自测，还没有经过维护者评审，也没有在真实部署上验收。
 
@@ -616,15 +656,136 @@ LeanGround 令牌，没有运行。2026-10-08 在阶段 2 合并后的代码上�
   `subgoal_unused`，漏报定义得到 `definition_not_registered`），不会产生错误的认证 [推断]。
 - `mdc check`、`goals`、`next`、`show`、`note` 不在本阶段；尝试笔记在草稿中恒为空（阶段 3）。
 - 多个 Agent 共用一个 `.mdc/` 时只续各自的租约，但记录文件可能被并发写；建议每个 Agent 使用自己的工作目录 [推断]。
-- 界面不显示拆法说明（阶段 3 的审阅视图）。
+- 界面不显示拆法说明（阶段 3 的审阅视图）。阶段 3 已补上（§3.5）。
 
-### 3.5 分支与合并状态
+### 3.5 项目阶段 3 的要点
+
+**目的**：验证 §2.7.3 的四条验收标准：`proposed` 的草图产生的新子目标领取时被拒，启用后可以领取；完整证明立即生效；
+笔记出现在 `pull` 写出的文件前段和界面上；旧看板的行为不变。
+
+**背景**：阶段 3 之前，认证一进入看板就是 `active`，任何成员提交的拆法都会立刻产生可领取的子目标；看板不记提交者；
+失败的经验没有地方存放（LeanGround 只保存成功的认证）。选路、可领取目标和组装本来就只看 `active` 的认证，
+所以只需要在认证到达时给出正确的初始状态。
+
+**改动**：
+
+- 协调层（`domain.ts`）：认证状态增加 `proposed`；`ingest` 带上来源（`agent`、`document`、`sync`、`assembly`），
+  只对新认证决定初始状态，并记提交者、提交时间；重新吸收时保留看板加上的字段。`decomposition` 带 `comment` 并记 `review`；
+  新命令 `note`、`policy`；`finish` 可带 `note`。目标上的笔记保留最近 50 条，每条最多 500 字符。
+- worker：各作业按来源吸收认证；`submit` 作业的结果加上认证的 `state`。
+- 目标草稿给出最近 20 条笔记（新的在前），`mdc pull` 写进前段。
+- `mdc`：新命令 `note`，`done --note`，`split --wait` 输出 `certificate_state`。
+- 界面（`Collaboration.svelte`）：拆法页的「Pending review」分组；任务板的笔记列、「Add note」、inactive 标记；
+  概览页的审阅策略开关。辅助函数 `activeGoals`、`branchesNeeding`、`goalStatement` 在 `web/src/lib/coordination.ts`。
+- 测试：`domain` 新增 2 项；`verbs`、`scenario` 按新规则更新（`scenario` 的自环拆法改为到达即退役，三个 agent 拆法由 owner 启用）；
+  前端单元测试新增 3 项；浏览器 e2e 的协作用例新增审阅与笔记的操作。
+- 文档站：`concepts/collaboration.md` 新增「Review」「Notes」两节，并更正阶段 2 之后已过时的「新前提要人手写陈述」；
+  `proofs.md`、`agents.md`、`workspace-commands.md` 相应更新。
+
+**方法**：
+
+- 条件同 §3.3：本机 PostgreSQL 17 与 TerminusDB 测试容器；替身 `leanground-double.ts`；本机开发用的 LeanGround 服务
+  （Mathlib 基座，Lean 4.33.1）；浏览器 e2e 用 Chromium，只运行与 LeanGround 相关的两项（LaTeX 用例需要本机没有的渲染环境）。
+- 验收对应：
+  - 标准 1：`verbs` 中 `split` 之后 `pull` 子目标以 `inactive_goal` 被拒，owner 启用后成功；e2e 中子目标在任务板上标为 inactive、
+    「Claim」不可用，启用后恢复；`scenario` 中三个 agent 拆法未启用时组装以 `no_active_route` 被拒。
+  - 标准 2：`domain` 测试中完整证明到达即 `active`；`verbs` 中 owner 只启用了拆法，子目标的完整证明没有经过审阅，
+    组装照样用上了它。
+  - 标准 3：`verbs` 中 `mdc note` 写的笔记出现在下一次 `pull` 的文件前段，`done --note` 的笔记记到目标上；e2e 中在任务板留笔记并显示。
+  - 标准 4：`domain` 测试中原型看板的草图到达即 `active`、`policy` 被拒；`integration`、`project`、`mathlib` 测试未改动且通过。
+- 变异检验：逐个改坏 6 处实现。
+- 截图：e2e 在「Pending review」和任务板笔记出现时各截一张，人工查看排版。
+
+**结果** [实测，2026-10-08，各 n = 1]：
+
+- 协调层测试 49 项：不连 LeanGround 时 45 项通过、4 项跳过（需要真实 LeanGround）；连本机 LeanGround 时 49 项全部通过，共 54 秒。
+  所以四条标准在替身和本机 LeanGround 上都成立，已有测试也没有因为默认状态的改变而失败（除了按设计更新的 `scenario`、`verbs`）。
+- 前端单元测试 32 项通过，`svelte-check` 0 错误 0 警告；浏览器 e2e 两项通过（协作用例 22 秒）。所以界面上的审阅与笔记可用。
+- 变异检验：6 处改坏全部被发现（草图从不 `proposed`、自环不退役、笔记不限条数、草稿不带笔记、前端 `activeGoals` 忽略状态、
+  `branchesNeeding` 忽略选择）。所以测试能发现这些回归。
+- 截图中「Pending review」显示前提陈述 `triple_one_alt : 3 = triple 1`、说明、提交者、「needed by branch main」和启用、退役按钮；
+  任务板显示笔记的操作者、时间和文字。所以 §2.7.3 审阅视图要求的信息都在界面上。
+
+过程中修正的问题：
+
+- 界面脚本里箭头函数的可选参数写法（`(ms?: number) =>`）通过了 `svelte-check`，却让 `vite build` 失败：Svelte 自带的类型剥离不支持它；
+  第一次 e2e 因此用的是旧的 `web/dist`，表现为找不到「Pending review」。改写法后通过。所以前端改动后要以构建结果为准，`svelte-check` 不够。
+- 截图发现 `proposed` 的认证旁仍有「Use on this branch」，选它只会让路线断开，已改为只对 `active` 的认证显示。
+- 领域测试最初直接调用 `command()`，绕过了命令解析，所以笔记没有去掉首尾空白；生产路径都先经过 `commandSchema`，测试已改为同样解析。
+
+**结论**：阶段 3 的四条验收标准在替身和本机 LeanGround 上都成立，状态为「已实现，待评审」。
+
+**未覆盖**：
+
+- 生产部署上没有运行；本机 LeanGround 上的证据都是单次运行。
+- 没有审阅者名单，也没有审阅通知；owner 不在时拆法会一直停在 `proposed`。
+- CLI 没有读取笔记或审阅状态的专门命令（§2.6 项目阶段 3 决定 5），也没有 `mdc review`。
+- `mdc note` 回复丢失后重跑可能多记一条笔记。
+- 界面没有在窄屏下检查；笔记很多时任务板一行会变高。
+
+### 3.6 项目阶段 4 的要点
+
+**目的**：验证 §2.7.4 的五条验收标准：两个命令行 Agent 用各自的子令牌领取和提交，记录能区分两者；只有 `work` 的子令牌执行 `assemble`
+被拒；撤销后下一次请求返回 401；修改成员名单时，主身份仍是成员的子令牌的租约不被撤销；一个脚本化的 MCP 客户端完成 `pull` → `prove`。
+
+**背景**：阶段 4 之前，身份只来自静态的 `MDC_ACTORS`，增减 Agent 要改配置并重启；一个人的多个 Agent 只能共用一个令牌，
+租约、提交和预算都分不开；任何令牌都有其主人的全部权限。
+
+**改动**：
+
+- 新模块 `coordinator/src/identity.ts`：子令牌表 `mdc_token`（只存哈希）、认证（先比对 `MDC_ACTORS`，再按哈希查子令牌）、权限范围、
+  各命令所需的范围（`commandScopes`）、令牌的创建、列出与撤销。
+- 必须一起改的比较都改为按主身份：`domain.ts` 的 `member()`、`owner()` 与改成员名单时撤销租约的比较；`store.ts` 的看板列表查询与
+  `submitBranch` 的成员检查；`docs/workspace.ts` 的文档角色；`docs/routes.ts` 与 `http.ts` 的管理员判断。新建看板的 owner 记主身份。
+- `http.ts`：`/api/tokens`（GET、POST、DELETE）；`/api/me` 增加 `principal`、`scopes`；命令、建项目、挂载、设置环境等处检查权限范围。
+  `docs/routes.ts`：文档写入与目录操作检查权限范围。
+- `mdc`：`token new/list/revoke`；`mcp`（新模块 `src/mdc/mcp.ts`）。
+- 界面：owner 判断改用主身份与 `maintain`；任务板新增「Budget by participant」表。
+- 测试：新增 `identity.test.ts`（替身 1 项、真实 LeanGround 1 项）、`domain` 1 项、前端单元测试 1 项；浏览器 e2e 协作用例加了预算表的检查。
+- 文档站：`concepts/workspaces.md` 新增「Delegated tokens」；`workspace-commands.md` 新增「Tokens」和「MCP」；`agents.md`、`http-api.md` 相应更新。
+
+**方法**：
+
+- 条件：本机 PostgreSQL 17 与 TerminusDB 测试容器；LeanGround 用替身。
+- `identity.test.ts` 的流程：bob 用本人令牌建 3 个子令牌（`agent-a`、`agent-b`、`mcp`），alice 建 `codex-1`（只有 `work`）和 `lead`（`work`+`maintain`）；
+  检查权限范围、`/api/me`、令牌列表不含密文、子令牌不能建令牌；`agent-a` 用 CLI 拆开根目标，`lead` 启用拆法，`agent-b` 领取一个子目标；
+  此时把成员改为 bob 和 carol，检查 `agent-b` 的租约仍在；`agent-b` 证完、结束；
+  一个子进程运行 `mdc mcp`，测试作为 MCP 客户端经标准输入输出完成 `initialize` → `tools/list` → `pull` → `prove`（等待检查）→ `done`；
+  最后检查尝试、提交者和事件能区分三个 Agent，撤销 `agent-b`、让 `agent-a` 过期后请求返回 401，把 bob 移出成员后其子令牌读不到看板。
+- 变异检验：逐个改坏 7 处实现。
+
+**结果** [实测，2026-10-08]：
+
+- 协调层测试 52 项：47 项通过、0 项失败、5 项跳过（都需要真实 LeanGround）；`cli` 测试单独运行通过。`identity.test.ts` 的替身一项
+  共运行 6 次，6 次通过，每次 2.3–2.7 秒。所以五条验收标准在替身上都成立，且没有观察到不稳定。
+- 前端单元测试 33 项通过，`svelte-check` 0 错误 0 警告，构建通过。
+- 变异检验：7 处改坏全部被发现（成员按完整身份比较、改成员时按完整身份撤销租约、不检查命令的权限范围、接受已撤销的令牌、
+  不检查文档写入的权限范围、子令牌可以建令牌、文档角色按完整身份判断）。所以这些测试能发现对应的回归。
+- 本机 LeanGround 服务在本阶段测试期间停止了（`127.0.0.1:8765` 拒绝连接），所以需要真实 LeanGround 的 5 项测试和浏览器 e2e 没有运行；
+  一次尝试中这 5 项全部在设置证明环境时以 `leanground_unavailable` 失败，与本阶段的改动无关 [推断：失败发生在调用 LeanGround 的第一步]。
+
+过程中修正的问题：
+
+- 领域测试中 `members` 命令会让看板回到「初始化中」，测试里补上「重新登记已完成」；集成测试补上给 carol 的读权限
+  （新成员必须能读 `main`，§4.3）。两处都是测试的前提，不是实现的错误。
+
+**结论**：阶段 4 的五条验收标准在替身上成立；真实 LeanGround 上的运行和浏览器 e2e 待服务恢复后补跑。状态为「已实现，待评审」。
+
+**未覆盖**：
+
+- 真实 LeanGround 上的 `identity`、`verbs`、`scenario`、`mathlib` 测试与浏览器 e2e（本阶段改了认证路径，需要补跑）。
+- 没有令牌管理界面；子令牌只能用 `mdc token` 或 HTTP 管理。
+- 令牌不记录最后使用时间；撤销以外没有自动轮换。
+- MCP 只实现了工具（没有资源、提示等能力），只在脚本化客户端上测过，没有用真实的聊天客户端接入。
+- 文档站 `development/setup.md` 有他人未提交的修改，所以 `MDC_TEST_LEANGROUND_ACTOR` 仍只写在本文 §4.12 和测试工具的注释里。
+
+### 3.7 分支与合并状态
 
 [实测：`git`，2026-10-08]
 
 | 分支 | 位置 | 说明 |
 |---|---|---|
-| `codex/mathdoc-coordination` | 主工作区，远端 `colab` | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1–2 和本文。项目阶段 1、2 的开发分支 `claude/shared-project-board`、`claude/mdc-verbs` 都已以快进方式并入后删除 |
+| `codex/mathdoc-coordination` | 主工作区，远端 `colab` | **主要工作分支**（2026-10-08 起）。包含迁移阶段 0–5、Project 模型设计、项目阶段 1–4 和本文。项目阶段 1、2 的开发分支 `claude/shared-project-board`、`claude/mdc-verbs` 都已以快进方式并入后删除 |
 
 主工作区里另有一组尚未提交的改动（不是本文作者所做）：删除归档原型 `app/` 及其开关 `MDC_APP_DIR`、删除部分 perf 报告，
 并相应修改 `coordinator/src/http.ts`、`config.ts`、`package.json` 等。两次合并时这组改动都原样保留在工作区。
@@ -633,7 +794,12 @@ LeanGround 令牌，没有运行。2026-10-08 在阶段 2 合并后的代码上�
 在这组改动之上，阶段 2 合并后协调层测试 47 项：43 项通过、4 项跳过（需要真实 LeanGround），`cli` 测试单独运行通过，
 前端测试 29 项通过 [实测，2026-10-08]。所以这组改动与阶段 2 的代码可以共存。
 
-### 3.6 已知问题
+项目阶段 3、4 直接在主工作区开发，按模块提交（协调层 `0891371`、界面 `0e07f5a`、文档）。阶段 4 也改了 `http.ts`，
+所以提交时把那组改动在 `http.ts` 里的两处从工作区版本中按文本逆向去掉（核对剩下的差异与原改动逐行相同），用临时暂存区构造提交，
+工作区与真实暂存区保持原样。在不含那组改动的提交上另开工作树验证：协调层测试 52 项中 47 项通过、5 项跳过（需要真实 LeanGround），
+前端测试 33 项通过，`svelte-check` 0 错误，构建通过 [实测，2026-10-08]。所以提交本身可以独立构建。
+
+### 3.8 已知问题
 
 - **Monaco 着色用例不稳定**：[实测，16 次运行失败 2 次] 编辑器显示后 4–40 毫秒内会重新着色一次，测试恰好在这个窗口取样就会失败。
 - **LeanGround 安装脚本原地覆盖已签名的二进制**：macOS 会拒绝运行；本机靠「写新文件再改名」绕过，LeanGround 仓库本身没有修改。
@@ -687,8 +853,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `coordinator/src/certification.ts` | 文档视图中的认证维度 |
 | `coordinator/src/contracts.ts` | v1 合同的运行时镜像；JSON Schema 在 `coordinator/contracts/v1/` |
 | `coordinator/src/cli.ts` | `mdc`：参数解析与分派 |
+| `coordinator/src/identity.ts` | 身份：本人令牌与委托子令牌、权限范围、令牌表（§4.3） |
 | `coordinator/src/goal-draft.ts` | 目标草稿（§4.11） |
-| `coordinator/src/mdc/*` | `mdc` 的动词层：请求与错误码（`client.ts`）、工作文件（`goal-file.ts`）、`.mdc/` 记录（`workspace.ts`）、四个动词（`verbs.ts`） |
+| `coordinator/src/mdc/*` | `mdc` 的动词层：请求与错误码（`client.ts`）、工作文件（`goal-file.ts`）、`.mdc/` 记录（`workspace.ts`）、动词（`verbs.ts`）、MCP 服务（`mcp.ts`） |
 
 ### 4.2 数据与存储
 
@@ -699,6 +866,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | 证明环境 | `mdc_project_environment`（按数据库）；阶段 4 的按分支环境留在 `mdc_environment`，只作为回退来源 |
 | 看板 | `mdc_project`，每张看板一条 JSONB；唯一索引 `mdc_project_scope`（数据库、环境） |
 | 命令幂等记录、事件、作业 | `mdc_command`、`mdc_event`、`mdc_job`（`result` 列记录作业结果，阶段 2 起） |
+| 委托子令牌 | `mdc_token`：主身份、名字、令牌的 SHA-256、权限范围、创建/过期/撤销时间（阶段 4） |
 | 认证与源码 | LeanGround；MathDoc 只存 ID |
 
 **兼容规则**：
@@ -711,10 +879,12 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 **看板结构**（`domain.ts` 的 `Board`）：
 
 - 共享部分：`goals`（GoalKey → 展示用标签、状态，以及阶段 2 起的 `proposition`、`definitions`、`declaration`）、
-  `facts`（认证 → 目标、前提、信任、`active/paused/retired`、是否仍可读、拆法说明 `description`）、
+  `facts`（认证 → 目标、前提、信任、`proposed/active/paused/retired`、是否仍可读、拆法说明 `description`，
+  阶段 3 起的 `submitter`、`submitted_at`、`review`、`retired_reason`）；目标上另有阶段 3 的尝试笔记 `notes`；
   `tasks`、`attempts`、`runs`（组装记录，带 `branch`）、`budget`/`spent`、`cursor`（LeanGround 事件游标）、`revision`。
 - 项目看板另有：
   - `project`：数据库、环境、根节点、是否被取代；
+  - `review`：新拆法是否等待审阅（`required`，缺省；或 `none`）；
   - `branches`：分支名 → 每个分支的 `request`（根节点、`bound`、`stale`、`error`、合同快照）、`nodes`（节点绑定）、`picks`、`writebacks`、`accepted`。
 - 阶段 4 的旧看板把 `request`、`nodes`、`writebacks` 放在顶层，现在只读。
 - 还有一种不绑定文档、由管理员直接给出陈述创建的看板（原型 `app/` 使用），保留未改。
@@ -723,6 +893,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 - 每个 API 请求都带 `Authorization: Bearer <令牌>`；令牌在 `MDC_ACTORS` 中映射到操作者，不接受请求体自报身份。
   浏览器请求还要求同源。
+- **委托子令牌**（项目阶段 4）：身份写作 `alice/codex-1`。文档角色、成员、owner、管理员都按主身份 `alice` 判断；
+  租约、事件、提交者、笔记、审阅、文档提交的作者记完整身份。子令牌的权限范围（`work`、`maintain`、`edit`）在主身份的角色之外再加限制，
+  不足时返回 `403 token_scope_required`（文档接口返回 403 并写明所需范围）。各命令与接口所需的范围见 §2.6 项目阶段 4 决定 2–3。
 - 工作区角色矩阵（合同决定 D）：
 
 | 动作 | 允许的角色 |
@@ -822,9 +995,10 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 | 命令 | 谁 | 作用 |
 |---|---|---|
-| `claim` / `heartbeat` / `finish` | 成员 / 租约持有人 | 租约：30–3600 秒；`finish` 报告花费和结果 |
+| `claim` / `heartbeat` / `finish` | 成员 / 租约持有人 | 租约：30–3600 秒；`finish` 报告花费和结果，可带一条笔记 |
+| `note` | 成员 | 在目标上留一条尝试笔记（1–500 字符；保留最近 50 条） |
 | `submit`、`resolve`、`import`、`submit_node`、`attach`、`sync` | 成员（`attach` 还需要分支的 editor 权限） | 后台作业；`submit` 可带 `description`，吸收草图时为新前提登记陈述（§4.11） |
-| `task`、`members`、`decomposition`、`pick`、`assemble`、`retry`、`accept` | owner | 管理 |
+| `task`、`members`、`decomposition`、`policy`、`pick`、`assemble`、`retry`、`accept` | owner | 管理；`decomposition` 即审阅，可带意见；`policy` 设定新拆法是否等待审阅 |
 | `notes` | 成员 | 项目备注 |
 
 **规则**：
@@ -832,6 +1006,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 - 数学状态、任务、尝试、拆法状态、项目状态分开记录。
 - 目标按 GoalKey 去重；每个新目标自动得到一个 `prove` 任务。
 - 只有从根出发、经 `active` 认证能到达的目标才能领取（否则 `inactive_goal`）。
+- **初始状态**（项目看板，阶段 3）：完整证明 `active`；文档节点来的草图 `active`；其余草图 `proposed`（`policy` 为 `none` 时 `active`）；
+  前提含结论自身的认证 `retired`。原型看板一律 `active`。已在看板上的认证重新吸收时保持原状态。
 - **租约**：只有一个持有人；epoch 防止迟到者覆盖新状态；过期在下一次状态变化时记录，按预留额全额计费；
   过期只撤销调度权，迟到的正确证明仍然吸收。
 - **预算**：领取时预留，结束时结算；超额以 `budget_exhausted` 拒绝。外部 Agent 的实际花费只能靠它自己上报。
@@ -909,7 +1085,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
   目标没有身份时报 `goal_unresolved`，因为没有身份就无法提交它的证明。
 - 可用前提：节点来源时取该节点的直接前提节点；再加上 `with` 指定的目标。每个前提的签名按同样的顺序取得。
 - 定义：结论与前提所用定义的并集，加上它们的依赖，按依赖顺序排列，源码从 LeanGround 读取。
-- 另给出 `root_module`、`context`、`options`、`environment_id`、看板修订号、笔记（阶段 3 之前恒为空）和该目标的 `prove` 任务及租约。
+- 另给出 `root_module`、`context`、`options`、`environment_id`、看板修订号、最近 20 条笔记（新的在前）和该目标的 `prove` 任务及租约。
 
 **新子目标的陈述**：`submit` 作业吸收草图后，对看板上还没有身份的每个前提，按认证的绑定名在提交的源码中找到占位声明，
 以 `∀ binders, type` 加上认证的 `definitions` 调用 `resolve`。GoalKey 一致就记下身份、命题、被引用的定义和声明；
@@ -988,7 +1164,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `cli` | PostgreSQL、TerminusDB，以及配置好的 LeanGround 变量（不调用证明命令） | `mdc` 文档命令 |
 | `scenario`、`mathlib` | 再加真实 LeanGround（`MDC_TEST_LEANGROUND_URL/TOKEN`；`mathlib` 另需 Mathlib 基座的 key） | 完整协作场景 |
 | `verbs` 第二项 | 同上 | 阶段 2 的同一流程在真实 LeanGround 上运行 |
-| `web` vitest、svelte-check、`web/e2e` | e2e 需要 TerminusDB、PostgreSQL，协作用例需要 LeanGround | 界面 |
+| `identity` | PostgreSQL、TerminusDB；第二项另需真实 LeanGround | 项目阶段 4 验收：子令牌、权限范围、撤销与过期、成员变更、`mdc mcp` 子进程 |
+| `web` vitest、svelte-check、`web/e2e` | e2e 需要 TerminusDB、PostgreSQL，协作用例需要 LeanGround | 界面；协作用例含审阅与笔记（阶段 3）。e2e 用的是 `web/dist`，前端改动后先构建 |
 
 测试的环境变量：`MDC_TEST_DATABASE_URL`、`MDC_TEST_TERMINUS_URL`、`MDC_TEST_TERMINUS_PASSWORD`；真实 LeanGround 另需
 `MDC_TEST_LEANGROUND_URL`、`MDC_TEST_LEANGROUND_TOKEN`，令牌的操作者不是 `coordinator` 时设 `MDC_TEST_LEANGROUND_ACTOR`
@@ -1000,7 +1177,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 **真实环境**：
 
-- 项目阶段 1、2 的真实 LeanGround 测试只在本机开发用的 LeanGround 服务上各运行过 1–2 次（§3.3、§3.4）；
+- 项目阶段 1–3 的真实 LeanGround 测试只在本机开发用的 LeanGround 服务上各运行过 1–2 次（§3.3、§3.4、§3.5）；
 - 整个协作应用没有在生产 TerminusDB 和生产 LeanGround 上部署验收；
 - 新 CI 没有在 GitHub 上运行过；
 - 本机没有真实的 MathDoc 文档库，Mathlib 统计与手写文档只是替代。
@@ -1013,8 +1190,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 **协作功能缺口**：
 
-- 证否、尝试笔记、`proposed` 审阅、委托子令牌；
-- `mdc` 只有第一批动词，没有 `check`、`goals`、`next`、`show`、`note`；`proof command` 仍不能安全重放；
+- 证否；子令牌没有管理界面；
+- 审阅只限 owner，没有审阅者名单和通知；
+- `mdc` 没有 `check`、`goals`、`next`、读取单个目标的命令和 `review`；`proof command` 仍不能安全重放；
 - 续租只在调用 `mdc` 时发生：Agent 超过租期不调用 `mdc`，租约就会过期（§2.6 项目阶段 2 决定 1）；
 - 分支 editor 不能修改自己分支的选择；
 - 删除的分支不会自动移出看板；
@@ -1047,7 +1225,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `docs/coordination.md` | Codex 原型的说明 | §4.1、§4.8（原型界面 `app/` 已不再使用） |
 | `docs/coordination-migration-plan.md` | 迁移计划（§0–§12） | §2.1、§2.6、§3.2、§4 |
 | `docs/coordination-phase-1-contracts.md` | v1 合同与合同决定 A–D | §2.6、§4.3、§4.6 |
-| `docs/coordination-phase-2.md` … `phase-5.md` | 迁移阶段 2–5 报告 | §3.2、§3.6 |
+| `docs/coordination-phase-2.md` … `phase-5.md` | 迁移阶段 2–5 报告 | §3.2、§3.8 |
 | `docs/coordination-project-model.md` | Project 模型设计、项目决定 A–F | §2.3–§2.7 |
 | `docs/coordination-goal-file.md` | `mdc-goal-file/1` 规范、决定 G1–G4 | §4.11 |
 | `docs/coordination-project-stage-1.md` | 项目阶段 1 报告 | §2.6、§3.3 |

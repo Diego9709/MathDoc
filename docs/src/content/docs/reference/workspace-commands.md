@@ -12,7 +12,7 @@ response. Only the [proof work](#proof-work) commands keep local state, in a
 | Environment | Meaning |
 | --- | --- |
 | `MDC_URL` | Server origin; default `http://127.0.0.1:17843`, or the server a `.mdc/` workspace was created for. |
-| `MDC_TOKEN` | Your access token (required). |
+| `MDC_TOKEN` | Your access token (required): your own, or a [delegated token](../../concepts/workspaces/#delegated-tokens). |
 | `MDC_PROJECT` | Default `DATABASE/BRANCH` for branch, node and proof commands. |
 
 `-p DATABASE/BRANCH` selects the branch explicitly and overrides `MDC_PROJECT`.
@@ -110,6 +110,23 @@ a replay. For proving, use the [proof work](#proof-work) commands, which replay
 safely; other agents can call the [HTTP API](../agents/) directly. Command types
 are listed in [Proofs with LeanGround](../proofs/#commands).
 
+## Tokens
+
+| Command | Behavior |
+| --- | --- |
+| `mdc token new NAME [--scope work,maintain,edit] [--expires 30d\|12h\|DATE]` | Create a delegated token acting as `YOU/NAME` (scope default `work`). Prints the token once. |
+| `mdc token list` | Your delegated tokens with scopes, creation, expiry and revocation times; never the tokens. |
+| `mdc token revoke NAME` | Revoke at once: the token's next request is `401`. |
+
+These need your own token, not a delegated one. Give each agent process its
+own token, so that leases, submissions and budgets are told apart:
+
+```sh
+export MDC_TOKEN=YOUR_TOKEN
+mdc token new codex-1                  # {"token": "mdct_…", "actor": "you/codex-1", …}
+MDC_TOKEN=mdct_… mdc pull double_eq -p myproject/main
+```
+
 ## Proof work
 
 Four commands take one goal of the database's current project from a claim to a
@@ -122,7 +139,8 @@ or above, like `.git/`).
 | `mdc pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]` | Claim the goal's task (lease of S seconds, default and maximum 3600; N budget units reserved, default 0) and write its goal file, by default `<first 8 digits of the GoalKey>-<conclusion>.lean`. Never overwrites a file (`file_exists`). `--with` adds more goals as available premises; `--no-claim` writes the file without a lease. |
 | `mdc prove FILE [--wait] [--dry-run] [--again]` | Submit the file as a complete proof (`has_premises` if a `sorry` premise remains). |
 | `mdc split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]` | Submit the file as a decomposition (`no_premises` if none remains). Its new premises become goals of the project, stated automatically. |
-| `mdc done [FILE] [--spent N] [--outcome O]` | End the lease, reporting `submitted` if the file was submitted under it and `no_progress` otherwise (or O). Without FILE, the one file holding your lease. |
+| `mdc done [FILE] [--spent N] [--outcome O] [--note TEXT]` | End the lease, reporting `submitted` if the file was submitted under it and `no_progress` otherwise (or O). Without FILE, the one file holding your lease. `--note` keeps what you learned on the goal. |
+| `mdc note FILE\|GOAL -m TEXT` | Keep a note on the goal of a pulled file, or on GOAL (with `-p`): what was tried, where it got stuck. At most 500 characters; the next `pull` of the goal shows it. |
 
 GOAL is a full GoalKey, a unique prefix of at least 8 hex digits, or the title or
 UUID of a converted node on the branch (`-p DATABASE/BRANCH`, or `--branch`).
@@ -165,11 +183,34 @@ the same request, and the server returns the first result instead of running it
 twice. If the request never arrived and the board has moved on, the resend is
 refused as outdated and a new submission is made. The same file submitted again
 reports the earlier submission (`replayed: true`); `--again` sends it anew.
-`--wait` waits for the worker and reports the certificate and each new premise
-(`--timeout`, default 600 seconds).
+`--wait` waits for the worker and reports the certificate, its
+`certificate_state` and each new premise (`--timeout`, default 600 seconds). A
+decomposition is usually `proposed`: its new premises cannot be pulled with a
+lease (`inactive_goal`) until the project owner activates it
+([Review](../../concepts/collaboration/#review)); `--no-claim` still writes their
+files.
 
 **Leases.** Every `pull`, `prove`, `split` and `done` also renews your leases in
 the workspace that are past half their time. A lease you let lapse only stops
 reserving the task for you: a correct proof submitted later is still recorded.
 If someone else holds the task, `pull` names them; `--no-claim` lets you work on
 it anyway.
+
+### MCP
+
+`mdc mcp [--dir DIR]` serves `pull`, `prove`, `split`, `done` and `note` as tools
+of a [Model Context Protocol](https://modelcontextprotocol.io) server over
+stdio, for chat clients that call tools but have no shell or files. The tools
+take and return the goal file's **text**: `pull` returns `{file, text, …}`;
+`prove` and `split` take `{file, text}` (and `description` for `split`, `wait`
+for both). The server keeps the files and their `.mdc/` records in DIR (default:
+the current directory), so replays and leases work as on the command line. Run it
+with a delegated token and the project:
+
+```json
+{"command": "mdc", "args": ["mcp", "--dir", "/path/to/work"],
+ "env": {"MDC_URL": "https://mathdoc.example", "MDC_TOKEN": "mdct_…", "MDC_PROJECT": "myproject/main"}}
+```
+
+A refused tool call is a result with `isError: true` and the `{reason, …}` of the
+failure.
