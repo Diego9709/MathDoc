@@ -51,9 +51,12 @@ scanner) need nothing; tests with real PostgreSQL and TerminusDB run when the
 variables above are set and are skipped otherwise. They create disposable
 databases; never point them at production data.
 
-Tests that need a real LeanGround (the full collaboration scenario, the CLI test
-and the Mathlib conversion test) additionally need `MDC_TEST_LEANGROUND_URL` and
-`MDC_TEST_LEANGROUND_TOKEN`; the Mathlib test also needs
+Tests that need a real LeanGround (the full collaboration scenario, the CLI test,
+the Mathlib conversion test, and the real-LeanGround runs of the verbs, identity
+and refute tests) additionally need `MDC_TEST_LEANGROUND_URL` and
+`MDC_TEST_LEANGROUND_TOKEN`, and `MDC_TEST_LEANGROUND_ACTOR` when the token's
+LeanGround actor is not `coordinator` (the coordinator registers that actor in
+every LeanGround project); the Mathlib test also needs
 `MDC_TEST_MATHLIB_BASE_KEY` naming a Mathlib base. The LeanGround server must
 meet the [requirements](../../getting-started/installation/#requirements), in
 particular a worker built at or after definition support. The scenario takes

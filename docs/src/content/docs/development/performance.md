@@ -59,6 +59,22 @@ npx tsx perf/lean-block-scan.ts /path/to/lean/sources [--json]
 keep earlier measurements, including those of the removed Rust backend; their
 commands refer to their original revisions.
 
+## Collaboration load
+
+`perf/board-load.ts` starts a coordinator (`coordinator/src/main.ts serve`) on a
+fresh PostgreSQL schema and TerminusDB database, writes a synthetic project board
+with N goals, and runs K agent processes that each repeat claim, two heartbeats,
+submit and finish the way `mdc` sends them. It prints, per command, the latency
+an agent sees (p50, p95, max), throughput, revision conflicts and board size, and
+whether every command's p95 meets the target. `perf/sync-cost.ts` times a sync
+job on a board with F certificates against the LeanGround double. Both need the
+`MDC_TEST_*` database variables and remove what they create.
+
+```sh
+npx tsx perf/board-load.ts --agents 20 --goals 1000 --rounds 10 --target-p95 500
+npx tsx perf/sync-cost.ts --facts 1000
+```
+
 ## Frontend performance
 
 The benchmark runs the production build in Chromium at 1440×900 against fixed,

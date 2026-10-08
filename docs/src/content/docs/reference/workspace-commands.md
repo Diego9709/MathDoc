@@ -140,6 +140,8 @@ or above, like `.git/`).
 | `mdc prove FILE [--wait] [--dry-run] [--again]` | Submit the file as a complete proof (`has_premises` if a `sorry` premise remains). |
 | `mdc split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]` | Submit the file as a decomposition (`no_premises` if none remains). Its new premises become goals of the project, stated automatically. |
 | `mdc done [FILE] [--spent N] [--outcome O] [--note TEXT]` | End the lease, reporting `submitted` if the file was submitted under it and `no_progress` otherwise (or O). Without FILE, the one file holding your lease. `--note` keeps what you learned on the goal. |
+| `mdc next [--branch B] [-n N] [--claim]` | The free goals most worth working on, best first ([What to do next](../../concepts/collaboration/#what-to-do-next)); `--claim` pulls the first. |
+| `mdc refute GOAL [pull flags]` | Register GOAL's negation if needed and pull it: proving that file with `mdc prove` refutes GOAL ([Refutation](../../concepts/collaboration/#refutation)). |
 | `mdc note FILE\|GOAL -m TEXT` | Keep a note on the goal of a pulled file, or on GOAL (with `-p`): what was tried, where it got stuck. At most 500 characters; the next `pull` of the goal shows it. |
 
 GOAL is a full GoalKey, a unique prefix of at least 8 hex digits, or the title or

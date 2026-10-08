@@ -42,7 +42,10 @@ P=$MDC/api/coordination/projects/PROJECT_ID
   running the command again; the same key with a different body or revision fails
   with `idempotency_conflict`. Use a new key for each new intent.
 - A command made against an old revision fails with `409 revision_conflict`:
-  read the board again and decide again.
+  read the board again and decide again. Lease and job commands (`claim`,
+  `heartbeat`, `finish`, `submit`, `resolve`, `note`, …) are checked against the
+  current board instead: send them with `If-Match: *`, without reading the board
+  first ([Commands](../proofs/#commands)).
 - The response is `{revision, result, job}`. `job` is set for queued commands;
   their effect appears on the board after the worker runs, and failures appear in
   `GET $P/jobs` with an `error` code.
@@ -53,8 +56,13 @@ P=$MDC/api/coordination/projects/PROJECT_ID
 
 ```sh
 curl -s -H "$AUTH" "$MDC/api/coordination/projects?database=DB&branch=BRANCH"
+curl -s -H "$AUTH" "$P/next"
 curl -s -H "$AUTH" "$P"
 ```
+
+`$P/next` lists free goals worth working on, best first
+([What to do next](../../concepts/collaboration/#what-to-do-next)); `mdc next`
+prints it.
 
 The first board in the list is the database's current project. It lists `goals`
 (key, statement, `status`), `tasks` (`state` `ready` or `leased`), `attempts`,

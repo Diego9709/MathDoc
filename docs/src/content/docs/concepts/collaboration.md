@@ -115,6 +115,7 @@ active certificates (otherwise `inactive_goal`).
 | `active` | Used for scheduling, routes and assembly. |
 | `paused` | Kept aside; can be made active again. |
 | `retired` | Not wanted; can still be made active again. |
+| `refuted` | A premise was proved false ([Refutation](#refutation)). Final. |
 
 No state deletes a fact, and no state changes what a goal's status says: a
 proposed or paused decomposition can still make its goal `derivable`.
@@ -149,6 +150,37 @@ it got stuck), with the `note` command, with `finish`, with `mdc note`, or in th
 browser's **Task board**. Each goal keeps its latest 50 notes of at most 500
 characters. `mdc pull` writes the latest 20 into the goal file, and the task board
 shows them all.
+
+## Refutation
+
+A decomposition can be checked and still be useless: its premises imply the goal,
+but one of them is false. MathDoc lets anyone prove that. `mdc refute GOAL` (or
+the `negate` command) registers the negation `¬ GOAL` as a goal of its own,
+named `not_<name>`: the worker resolves the negated statement in the project's
+environment, so the negation has a GoalKey like any goal and any proof of the
+same statement counts. Its task can be claimed while GOAL is worth working on.
+
+When a complete proof of the negation arrives, GOAL is **refuted**:
+
+- every certificate with GOAL as a premise becomes `refuted` and leaves every
+  route; it cannot be made active again;
+- the tasks of GOAL, and of goals that only those certificates reached, are
+  cancelled, ending their leases (charged their reservation);
+- GOAL and the goal of each refuted decomposition get a note saying why, so its
+  submitter finds it on the task board and in the next goal file.
+
+A sketch of the negation refutes nothing until it is assembled into a complete
+proof.
+
+## What to do next
+
+`mdc next` (and the order of the task board) recommends free goals worth
+working on: goals on the frontier of the branches' routes (needed, unproved, with
+no active decomposition of their own, not leased). Each route that needs a goal
+adds 1 ÷ the number of goals the route still lacks, so routes close to closing
+count more; the sum is divided by 1 + the goal's failed attempts (no progress,
+execution failure or an expired lease). A registered negation scores as its
+goal. `mdc next --claim` pulls the first recommendation.
 
 ## Routes and picks
 
@@ -234,8 +266,8 @@ Collaboration never widens document access:
   `member_lacks_document_access`.
 - The owner alone changes members, adds tasks, reviews and manages
   decompositions, sets the review policy, picks, assembles, retries and accepts.
-  Members claim tasks, submit, resolve, add notes, attach branches they can edit
-  and sync.
+  Members claim tasks, submit, resolve, add notes, register negations, attach
+  branches they can edit and sync.
 
 Changing members revokes the open leases of removed members (charged their
 reservation).

@@ -130,7 +130,12 @@ attached branch for staleness. A deleted branch is marked stale.
 ## Commands
 
 Project commands are `POST /api/coordination/projects/<id>/commands` bodies with a
-`type`. Commands marked *queued* return `{queued: true}` and are carried out by
+`type`. Lease and job commands (`claim`, `heartbeat`, `finish`, `submit`,
+`resolve`, `import`, `sync`, `submit_node`, `note`, `negate`) are checked
+against the board as it is, so they may be sent with `If-Match: *` and are never
+refused for an outdated revision; leases do not change the board's revision.
+Every other command needs the revision the client read (`428
+revision_required` for `*`, `409 revision_conflict` if it changed). Commands marked *queued* return `{queued: true}` and are carried out by
 the worker; watch `/jobs` or the board. A command naming a `branch` needs read
 access to it (`attach`: `editor`). Superseded boards and per-branch proof
 requests of earlier versions refuse every command (`project_superseded`,
@@ -145,6 +150,7 @@ requests of earlier versions refuse every command (`project_superseded`,
 | `heartbeat` | lease holder | `attempt`, `epoch`, `ttl` | Extend the lease. |
 | `finish` | lease holder | `attempt`, `epoch`, `spent`, `outcome`, `note?` | End the attempt; a note is kept on the task's goal. |
 | `note` | member | `goal`, `text` (1–500 characters) | Keep a note on a goal; the latest 50 stay. |
+| `negate` | member | `goal` | Queued: register the goal's negation as a goal (result `{goal, negation, name}`); answers at once with a negation already registered ([Refutation](../../concepts/collaboration/#refutation)). |
 | `resolve` | member | `goal`, `proposition`, `definitions` | Queued: give a known GoalKey its statement. |
 | `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions`, `description?` | Queued: submit a proof or sketch; a sketch's new premises get their statements ([below](#new-subgoals)). |
 | `submit_node` | member | `node`, `branch` | Queued: resubmit a theorem node of an attached branch. |
