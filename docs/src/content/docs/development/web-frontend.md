@@ -7,15 +7,20 @@ mounts the project directory at `/` and the editor at `/p/DATABASE/BRANCH/`.
 
 ## Structure
 
+Paths are under `web/src/`.
+
 | Area | Files |
 | --- | --- |
+| Entry | `main.ts`: signs in if `/api/me` answers `401`, else mounts the directory or the editor. |
 | Sign-in and token | `components/SignIn.svelte`, `lib/auth.ts` (token in `localStorage` under `mdc-access-token`, added to every request; a `401` signs out). |
-| Directory | `Projects.svelte`, `components/ProjectCreate.svelte`; polls `/api/projects` while visible. |
-| Editor | `App.svelte`, `components/EditorPane.svelte`, `NodeColumn.svelte`, `DepthGraph.svelte`, `BlockEditor.svelte`, overlays for search and dependencies. |
+| Directory | `Projects.svelte`, `components/ProjectCreate.svelte`; polls `/api/projects` every 5 s while visible. |
+| Editor | `App.svelte`, `components/EditorPane.svelte`, `NodeColumn.svelte`, `DepthGraph.svelte`, `BlockEditor.svelte`, `AddBlockControl.svelte`, overlays for search, new nodes and dependencies; `lib/state.svelte.ts` (node session), `lib/workspace.svelte.ts` (graph refresh and invalidation), `lib/history.ts` and `lib/browser-history.ts` (back and forward). |
 | Status | `components/FormalStatus.svelte`: local check and LeanGround certification. |
-| Collaboration | `components/Collaboration.svelte` (four views), `LeanGroundSubmit.svelte`, `ProofEnvironmentForm.svelte`, `lib/coordination.ts` (API client; commands carry `If-Match` and a fresh `Idempotency-Key`). |
-| LaTeX | `components/LatexPreview.svelte`, `LatexProjectForm.svelte`, `lib/latex-session.svelte.ts` (draft requests and cancellation), `lib/latex-completion.ts`, `lib/latex-math.ts` (MathJax 4). |
-| Shared | `lib/project-path.ts` scopes branch API calls; `lib/unsaved.ts` tracks drafts; `lib/monaco.ts` and `lib/monaco-scroll.ts` set up editors. |
+| Settings | `components/ProjectSettings.svelte`: tabs for `ProofEnvironmentForm.svelte` and `LatexProjectForm.svelte`. |
+| Collaboration | `components/Collaboration.svelte` (four views: proof overview, task board, decompositions, review; the owner and members who can edit the branch pick its route), `LeanGroundSubmit.svelte`, `lib/coordination.ts` (API client; commands carry `If-Match` and a fresh `Idempotency-Key`). |
+| LaTeX | `components/LatexPreview.svelte`, `LatexImports.svelte`, `lib/latex.ts` (API), `lib/latex-session.svelte.ts` (draft requests and cancellation), `lib/latex-completion.ts`, `lib/latex-math.ts` (MathJax 4), `lib/latex-diagram.ts` (TikZ in a WebAssembly TeX worker, sanitized SVG). |
+| Shared | `lib/api.ts` (document API client; `409` and `412` are conflicts); `lib/project-path.ts` scopes branch API calls; `lib/unsaved.ts` tracks drafts and pending writes; `lib/monaco.ts`, `lib/monaco-scroll.ts` and `lib/editor-layout.ts` set up editors; `lib/theme.ts`, `lib/modal.ts`. |
+| Unit tests | `lib/*.test.ts` (Vitest, `npm test -w mdc-web`). |
 
 All block types, Lean included, use Monaco with native TextMate highlighting
 (grammar data from `@shikijs/langs`, `lean4` for Lean), the system monospace
@@ -55,8 +60,9 @@ selects another backend URL; it is a Vite setting only.
 
 `npm run build -w mdc-web` writes `web/dist`, which the API serves and the Docker
 image copies. The browser suite ([Development setup](../setup/#browser-tests))
-covers the project directory, CLI/browser conflicts, navigation, graph
-invariants, drafts, editor layout, LaTeX, Lean blocks as plain editors, and a Lean
-node submitted, assembled and written back through the collaboration views (with
-a LeanGround server). Frontend performance is in
+covers the project directory, node dialogs, large relation lists, CLI/browser
+conflicts, navigation, graph invariants, drafts, editor layout, LaTeX (including
+tables, colors and TikZ), Lean blocks as plain editors, and a Lean node
+submitted, assembled and written back through the collaboration views (with a
+LeanGround server). Frontend performance is in
 [Performance measurements](../performance/#frontend-performance).

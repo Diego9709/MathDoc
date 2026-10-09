@@ -12,4 +12,4 @@ MathDoc manages mathematical knowledge as a versioned dependency graph in Termin
 - [HTTP API](docs/src/content/docs/reference/http-api.md)
 - [Development](docs/src/content/docs/development/setup.md)
 
-Repository layout: `coordinator/` the TypeScript backend (API, worker, `mdc` CLI), `web/` the knowledge editor, `renderer/` the LaTeX renderer, `app/` an archived collaboration prototype, `docs/` the documentation site and [`docs/mathdoc.md`](docs/mathdoc.md), the internal plan, progress and technical notes (in Chinese).
+Repository layout: `coordinator/` the TypeScript backend (API, worker, `mdc` CLI), `web/` the knowledge editor, `renderer/` the LaTeX renderer, `perf/` backend benchmarks, `docs/` the documentation site and [`docs/mathdoc.md`](docs/mathdoc.md), the internal plan, progress and technical notes (in Chinese).

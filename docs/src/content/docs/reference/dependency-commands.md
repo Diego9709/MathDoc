@@ -17,18 +17,24 @@ mdc dep candidates 'Theorem' lemma -n 20 -p myproject/main
 `add` adds one direct edge: the source depends on the target. `rm` removes one or
 more targets in a single commit. Every target is resolved before writing; one
 unknown target or a stale source revision rejects the whole operation. Adding an
-existing edge or removing an absent one changes nothing.
+existing edge writes nothing; removing an absent one leaves the edges unchanged. A new edge that would
+close a cycle is rejected (`422 dependency cycle rejected`). Both print the
+updated source node.
 
 `show` follows outgoing dependencies; `refs` follows incoming referrers.
 `-d/--depth` defaults to 1; 0 returns nothing and -1 means unlimited. Results
-exclude the source node, list each reachable node once and report its
-breadth-first distance in `depth`. `leaf` follows all dependencies and returns
-the reachable nodes without outgoing edges.
+are `{fnode, title, depth}`: they exclude the source node, list each reachable
+node once and report its breadth-first distance in `depth`. `leaf` follows all
+dependencies (it ignores `-d`) and returns the reachable nodes without outgoing
+edges.
 
 `candidates SOURCE [QUERY]` searches titles and UUIDs case-insensitively,
 excluding the source and its existing direct dependencies, and returns
-`{nodes, empty}`. `-n` is capped at 200; the CLI asks for 200 by default. A
-candidate is a suggestion only: the write itself rejects cycles.
+`{nodes, empty}`. `-n` is capped at 200; the CLI asks for 200 by default (the
+API's default is 50). When `nodes` is empty, `empty.kind` says why:
+`result_limit`, `excluded` (only the source or existing dependencies matched) or
+`no_match`; otherwise `empty` is `null`. A candidate is a suggestion only: the
+write itself rejects cycles.
 
 `mdc new -t TITLE --parent SOURCE` creates a node and the edge from SOURCE in one
 commit. For `new --parent`, `dep add` and `dep rm`, `--revision` is the revision

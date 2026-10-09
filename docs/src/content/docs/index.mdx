@@ -6,20 +6,25 @@ description: Collaborative mathematical graphs whose Lean proofs are checked by 
 MathDoc stores mathematical knowledge as a versioned dependency graph in
 **TerminusDB**. Each node holds text, LaTeX, Lean and Rocq blocks and declares
 the nodes it depends on. People and agents edit the same graph through a browser
-editor, the `mdc` command-line client and one HTTP API; every request carries a
-personal access token.
+editor, the `mdc` command-line client and one HTTP API; every request carries an
+access token, a person's own or one they delegated to an agent.
 
-MathDoc does not run Lean. A Lean node is submitted to
+MathDoc does not run Lean. Every Lean proof is checked by
 [LeanGround](https://github.com/YanbiaoLab/LeanGround), an external service that
-checks proofs and stores certificates. MathDoc converts the node and its Lean
-dependencies into LeanGround requests, turns the open parts into tasks that
-people and agents claim, and writes the certified result back into the document
-in one reviewed batch.
+checks proofs and stores certificates. Each database has one proof environment
+and, once its owner submits a root theorem, one **project**: that theorem, with
+goals, certificates, tasks and a budget that all its branches share. A branch is
+a route through that shared proof graph: a lemma proved on one branch is proved
+on all of them. Agents claim goals and submit complete proofs or decompositions
+with `mdc`; the owner reviews decompositions, has LeanGround assemble a branch's
+route into one proof and writes the certified sources back into the branch in
+one batch.
 
 | Part | Role |
 | --- | --- |
 | TerminusDB | Documents: nodes, edges, source blocks, LaTeX settings and commit history. |
-| PostgreSQL | Collaboration data, workspace permissions and per-branch proof environments. |
+| PostgreSQL | Project boards, tasks, leases, jobs and events; workspace permissions, per-database proof environments and delegated tokens. |
+| Migration (`migrate`) | Creates or updates the PostgreSQL tables; runs before the other two. |
 | API process (`serve`) | Document API, collaboration API, the web editor and the LaTeX renderer. |
 | Worker process (`worker`) | Talks to LeanGround: converts nodes, submits, syncs, assembles and writes back. |
 | LeanGround (external) | Checks every Lean proof and stores certificates. |

@@ -16,18 +16,18 @@ size. It never contacts LeanGround.
 
 ```sh
 export MDC_TOKEN=your-access-token
-python3 perf/graph-service.py --url http://127.0.0.1:17843/p/mathlib4/main \
-  --cli coordinator/dist/cli.js --proj mathlib4/main --query Algebra \
+python3 perf/graph-service.py --url http://127.0.0.1:17843/p/myproject/main \
+  --cli coordinator/dist/cli.js --proj myproject/main --query Algebra \
   --samples 20 --output /tmp/graph-baseline.json
 ```
 
 `MDC_TOKEN` authenticates the HTTP requests and is passed on to the CLI. `--cli`
-is the path of the TypeScript `mdc`. The TypeScript build does not set the
-executable bit, so run `chmod +x coordinator/dist/cli.js` once (in the Docker
-image `mdc` is already executable). Set `MDC_URL` if the server is not on the
-default origin. With
-`--cli`, `--proj` is required and must name the branch served at `--url`; each
-CLI sample is a fresh process, so it includes Node startup.
+is the path of an executable `mdc` (the backend build marks
+`coordinator/dist/cli.js` executable). Set `MDC_URL` if the server is not on the
+default origin. With `--cli`, `--proj` is required and must name the branch
+served at `--url`; each CLI sample is a fresh process, so it includes Node
+startup. `--query` (default `equation`) is the search term; `--samples` defaults
+to 20, after one untimed warm-up request per endpoint.
 
 The default run is read-only. `--writes` adds temporary nodes and measures
 creation, renames, text saves, adding and removing edges, and rejection of stale
@@ -39,41 +39,29 @@ HTTP timings include connection setup, transfer and JSON decoding. No operating
 system or database caches are flushed; the first request to a branch also loads
 its snapshot. These are local observations, not latency guarantees.
 
-## Test graphs
-
-`perf/mathlib-import.py` converts a pinned Mathlib checkout into an import bundle
-(one node per module, source bytes preserved). It uses the checkout's Lean
-toolchain through `elan` to parse imports, so it needs Elan on the machine that
-runs it, not on the server. The resulting bundle is far larger than the API's
-current request-body limit of 2,200,000 bytes, so it cannot be restored with
-`mdc import` at present.
-
-`perf/lean-block-scan.ts` reports how many Lean sources the node scanner accepts,
-per file and per top-level command:
-
-```sh
-npx tsx perf/lean-block-scan.ts /path/to/lean/sources [--json]
-```
-
-[Archived reports](https://github.com/mathdocument/MathDoc/tree/main/perf/reports)
-keep earlier measurements, including those of the removed Rust backend; their
-commands refer to their original revisions.
-
 ## Collaboration load
 
 `perf/board-load.ts` starts a coordinator (`coordinator/src/main.ts serve`) on a
 fresh PostgreSQL schema and TerminusDB database, writes a synthetic project board
 with N goals, and runs K agent processes that each repeat claim, two heartbeats,
-submit and finish the way `mdc` sends them. It prints, per command, the latency
-an agent sees (p50, p95, max), throughput, revision conflicts and board size, and
-whether every command's p95 meets the target. `perf/sync-cost.ts` times a sync
-job on a board with F certificates against the LeanGround double. Both need the
-`MDC_TEST_*` database variables and remove what they create.
+submit and finish the way `mdc` sends them (`If-Match: *`; only a claim reads the
+board first, to choose a task). No worker runs, so `submit` only queues a job and
+LeanGround is never called. It prints, per command, the latency an agent sees
+(p50, p95, max, including that read and any retry), throughput, revision
+conflicts, lost claims, errors and board size, and whether every command's p95
+meets `--target-p95`. It needs `MDC_TEST_DATABASE_URL`, `MDC_TEST_TERMINUS_URL`
+and `MDC_TEST_TERMINUS_PASSWORD`.
+
+`perf/sync-cost.ts` times the worker's sync job on a board with F certificates,
+each read again from the LeanGround double on loopback; no branch is attached. It
+needs only `MDC_TEST_DATABASE_URL`. Both remove what they create.
 
 ```sh
-npx tsx perf/board-load.ts --agents 20 --goals 1000 --rounds 10 --target-p95 500
-npx tsx perf/sync-cost.ts --facts 1000
+npx tsx perf/board-load.ts --agents 20 --goals 1000 --rounds 10 --target-p95 500 [--seed 1]
+npx tsx perf/sync-cost.ts --facts 1000 [--runs 3]
 ```
+
+The values shown are the defaults, except `--facts` (default 358).
 
 ## Frontend performance
 
@@ -108,7 +96,9 @@ node web/perf/run.mjs --browser webkit --output /tmp/mdc-webkit-perf.json
 `npm run perf:measure -w mdc-web` writes an uncompared `web/perf/latest.json`
 (ignored by Git). Use `npm run perf:record -w mdc-web` only to accept a new
 baseline intentionally, and review baseline or budget changes together with the
-change that needs them.
+change that needs them. `MDC_PERF_SAMPLES` sets the samples per metric (default
+5). The committed baseline dates from 2026-09-07, before the Lean editor and
+Infoview were removed, so local comparisons are against that older build.
 
 Timings vary across machines, so pull requests benchmark the base and head
 revisions on the same GitHub runner and apply the tolerances in
