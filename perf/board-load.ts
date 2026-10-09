@@ -1,6 +1,6 @@
 // Board load test (docs/mathdoc.md §2.7.5). K agent processes work on one project board with N
-// goals the way `mdc` does: read the board for its revision, send the command, and on
-// revision_conflict read it again and resend. Each agent repeats claim, heartbeat (twice),
+// goals the way `mdc` does: lease and job commands go with `If-Match: *` (checked against the
+// current board, docs/mathdoc.md §2.6 stage 5 decision 2). Each agent repeats claim, heartbeat (twice),
 // submit and finish. The server runs as its own process (coordinator/src/main.ts serve), so
 // agents' JSON parsing does not slow it down. LeanGround is not called: `submit` only queues a
 // job, and no worker runs.
