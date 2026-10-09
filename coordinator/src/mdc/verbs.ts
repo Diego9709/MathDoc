@@ -17,6 +17,8 @@ import type { FileRecord, Lease, Submission, Workspace } from "./workspace.js";
 export interface VerbContext {
   client: Client;
   cwd: string;
+  /** Where maintainer commands keep their replay records (src/mdc/maintain.ts). */
+  stateDir?: string;
   /** DATABASE/BRANCH from -p or MDC_PROJECT. */
   project?: string;
   flag(name: string): string | undefined;
@@ -26,8 +28,21 @@ export interface VerbContext {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
-const path = (project: string, rest = "") =>
+export const projectPath = (project: string, rest = "") =>
   `/api/coordination/projects/${project}${rest}`;
+/**
+ * -p DATABASE/BRANCH (or MDC_PROJECT), split: `home` is its branch, `branch` that or --branch.
+ * `what` names the command in the usage error.
+ */
+export function scope(ctx: VerbContext, what: string) {
+  if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
+    throw new MdcError(
+      "usage",
+      `${what} needs -p DATABASE/BRANCH (or MDC_PROJECT)`,
+    );
+  const [database, home] = ctx.project.split("/");
+  return { database, home, branch: ctx.flag("--branch") ?? home };
+}
 const number = (ctx: VerbContext, name: string, fallback: number) => {
   const raw = ctx.flag(name);
   if (raw === undefined) return fallback;
@@ -66,7 +81,7 @@ async function workspace(ctx: VerbContext, dir: string, create = false) {
 }
 
 /** The database's current project board, as seen from the branch. */
-async function liveBoard(c: Client, database: string, branch: string) {
+export async function liveBoard(c: Client, database: string, branch: string) {
   const boards: any[] = await c.request(
     "GET",
     `/api/coordination/projects?${new URLSearchParams({ database, branch })}`,
@@ -204,13 +219,7 @@ async function claim(
 
 export async function pull(ctx: VerbContext, ref: string | undefined) {
   if (!ref) throw new MdcError("usage", "mdc pull GOAL");
-  if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
-    throw new MdcError(
-      "usage",
-      "pull needs -p DATABASE/BRANCH (or MDC_PROJECT)",
-    );
-  const [database, projectBranch] = ctx.project.split("/");
-  const branch = ctx.flag("--branch") ?? projectBranch;
+  const { database, branch } = scope(ctx, "pull");
   const ttl = number(ctx, "--ttl", 3600);
   if (ttl < 30 || ttl > 3600)
     throw new MdcError("invalid_argument", "--ttl is 30 to 3600 seconds");
@@ -223,7 +232,7 @@ export async function pull(ctx: VerbContext, ref: string | undefined) {
   if (ctx.flag("--with")) params.set("with", ctx.flag("--with")!);
   const draft: GoalDraft = await ctx.client.request(
     "GET",
-    path(board.id, `/goals/${goal}/draft?${params}`),
+    projectPath(board.id, `/goals/${goal}/draft?${params}`),
   );
   const rendered = render(draft);
   const file = resolve(
@@ -297,7 +306,7 @@ async function follow(
   while (s.status === "queued" && s.job) {
     const job = await ctx.client.request(
       "GET",
-      path(record.project, `/jobs/${s.job}`),
+      projectPath(record.project, `/jobs/${s.job}`),
     );
     if (job.status === "done") {
       s.status = "certified";
@@ -355,7 +364,7 @@ async function send(
     try {
       const res = await ctx.client.request(
         "POST",
-        path(record.project, "/commands"),
+        projectPath(record.project, "/commands"),
         request,
         { "if-match": `"${s.revision}"`, "idempotency-key": s.key },
       );
@@ -545,12 +554,7 @@ export async function note(ctx: VerbContext, ref: string | undefined) {
     if (!(e instanceof MdcError) || e.reason !== "not_pulled") throw e;
   }
   if (!target) {
-    if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
-      throw new MdcError(
-        "usage",
-        "a goal reference needs -p DATABASE/BRANCH (or MDC_PROJECT)",
-      );
-    const [database, branch] = ctx.project.split("/");
+    const { database, home: branch } = scope(ctx, "a goal reference");
     const board = await liveBoard(ctx.client, database, branch);
     target = {
       project: board.id,
@@ -571,10 +575,13 @@ export async function note(ctx: VerbContext, ref: string | undefined) {
 }
 
 /** Wait for a queued job (the worker may run elsewhere); its result, or its error as a failure. */
-async function waitJob(ctx: VerbContext, project: string, job: string) {
+export async function waitJob(ctx: VerbContext, project: string, job: string) {
   const until = ctx.now() + number(ctx, "--timeout", 600) * 1000;
   for (;;) {
-    const j = await ctx.client.request("GET", path(project, `/jobs/${job}`));
+    const j = await ctx.client.request(
+      "GET",
+      projectPath(project, `/jobs/${job}`),
+    );
     if (j.status === "done") return j.result;
     if (j.status === "failed")
       throw new MdcError(j.error ?? "job_failed", `job ${job} failed`);
@@ -590,13 +597,7 @@ async function waitJob(ctx: VerbContext, project: string, job: string) {
  */
 export async function refute(ctx: VerbContext, ref: string | undefined) {
   if (!ref) throw new MdcError("usage", "mdc refute GOAL");
-  if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
-    throw new MdcError(
-      "usage",
-      "refute needs -p DATABASE/BRANCH (or MDC_PROJECT)",
-    );
-  const [database, projectBranch] = ctx.project.split("/");
-  const branch = ctx.flag("--branch") ?? projectBranch;
+  const { database, branch } = scope(ctx, "refute");
   const board = await liveBoard(ctx.client, database, branch);
   const goal = await goalOf(ctx.client, board, ref, database, branch);
   let negation = Object.entries(
@@ -617,20 +618,15 @@ export async function refute(ctx: VerbContext, ref: string | undefined) {
 
 /** The goals most worth working on (§2.7.5); with --claim, pull the first one. */
 export async function next(ctx: VerbContext) {
-  if (!ctx.project || !/^[\w-]+\/[\w-]+$/.test(ctx.project))
-    throw new MdcError(
-      "usage",
-      "next needs -p DATABASE/BRANCH (or MDC_PROJECT)",
-    );
-  const [database, projectBranch] = ctx.project.split("/");
-  const board = await liveBoard(ctx.client, database, projectBranch);
+  const { database, home } = scope(ctx, "next");
+  const board = await liveBoard(ctx.client, database, home);
   const params = new URLSearchParams({
     limit: String(number(ctx, "--max", 10)),
   });
   if (ctx.flag("--branch")) params.set("branch", ctx.flag("--branch")!);
   const out = await ctx.client.request(
     "GET",
-    path(board.id, `/next?${params}`),
+    projectPath(board.id, `/next?${params}`),
   );
   if (!ctx.has("--claim")) return out;
   const first = out.candidates[0];

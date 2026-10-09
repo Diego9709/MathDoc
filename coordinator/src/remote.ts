@@ -34,35 +34,58 @@ export async function responseJson(res: Response): Promise<unknown> {
   }
   return data;
 }
+/** Fact operations that run Lean: they may wait for a worker to start or a long check to end. */
+const LEAN_OPERATIONS = new Set(["resolve", "submit", "define", "assemble"]);
+/** Reads, queries, events and base lookups (docs/mathdoc.md §2.7.7). */
+const SHORT_TIMEOUT_MS = 30000;
+/** Slightly above LeanGround's own default wall-clock limit per request (900 s). */
+export const DEFAULT_LEAN_TIMEOUT_S = 960;
 export class LeanGround {
   constructor(
     private url: string,
     private token: string,
+    private leanTimeoutMs = DEFAULT_LEAN_TIMEOUT_S * 1000,
   ) {
     const u = new URL(url);
     if (!["http:", "https:"].includes(u.protocol) || u.username || u.password)
       throw new Error("invalid LeanGround URL");
   }
-  async call(path: string, body?: unknown): Promise<any> {
+  async call(
+    path: string,
+    body?: unknown,
+    timeoutMs = SHORT_TIMEOUT_MS,
+  ): Promise<any> {
     // External payloads are validated at their domain boundary.
-    let res: Response;
     try {
-      res = await fetch(`${this.url.replace(/\/$/, "")}${path}`, {
+      const res = await fetch(`${this.url.replace(/\/$/, "")}${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
           authorization: `Bearer ${this.token}`,
           "content-type": "application/json",
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(timeoutMs),
         redirect: "error",
       });
-    } catch {
-      throw new RemoteError("leanground_unavailable", true, 0);
+      // The time limit covers reading the body too.
+      return await responseJson(res);
+    } catch (e) {
+      if (e instanceof RemoteError) throw e;
+      // A timeout may have left work running in LeanGround; jobs retry both.
+      throw new RemoteError(
+        (e as Error)?.name === "TimeoutError"
+          ? "leanground_timeout"
+          : "leanground_unavailable",
+        true,
+        0,
+      );
     }
-    return responseJson(res);
   }
   fact(operation: string, body: unknown) {
-    return this.call(`/v1/facts/${operation}`, body);
+    return this.call(
+      `/v1/facts/${operation}`,
+      body,
+      LEAN_OPERATIONS.has(operation) ? this.leanTimeoutMs : SHORT_TIMEOUT_MS,
+    );
   }
 }

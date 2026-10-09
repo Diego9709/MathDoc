@@ -19,7 +19,9 @@ import {
   attached,
   rankGoals,
   type Board,
+  type Grants,
 } from "./domain.js";
+import { decompositions, goalDetail, goalSummaries } from "./goal-view.js";
 import { fetchBase, resolveProject } from "./worker.js";
 import { goalDraft } from "./goal-draft.js";
 import {
@@ -385,7 +387,7 @@ export function server(
         return;
       }
       const match =
-        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals|next)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
+        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals|next|decompositions)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
           path,
         );
       requireThat(match, "not_found", 404);
@@ -397,7 +399,18 @@ export function server(
         throw new Fault("not_found", 404);
       if (operation === "commands" && method === "POST") {
         const input = commandSchema.parse(await body(req));
-        requireScope(who, ...commandScopes[input.type]);
+        const grants: Grants = {};
+        // §2.7.7: a branch's route is part of its content, so its editors pick too; the
+        // owner picks with `maintain`, an editor (or an owner's token without it) with `edit`.
+        if (
+          input.type === "pick" &&
+          m.database &&
+          !(m.owner === who.principal && allows(who, "maintain"))
+        ) {
+          requireScope(who, "edit");
+          await documentRole(actor, m.database, input.branch, "write");
+          grants.editsBranch = true;
+        } else requireScope(who, ...commandScopes[input.type]);
         if (input.type === "members") {
           requireThat(
             input.members.every((m) => Object.hasOwn(cfg.actors, m)),
@@ -427,7 +440,7 @@ export function server(
         send(
           res,
           200,
-          await store.apply(id, actor, revision(req), key(req), input),
+          await store.apply(id, actor, revision(req), key(req), input, grants),
         );
         return;
       }
@@ -514,6 +527,53 @@ export function server(
             definition: (id) =>
               lean.fact("read", { kind: "definition", id, source: true }),
           }),
+        );
+        return;
+      }
+      if (
+        (operation === "goals" || operation === "decompositions") &&
+        !draft &&
+        method === "GET"
+      ) {
+        // §2.7.7: what `mdc goals`, `mdc goal` and `mdc review` show, from the visible board.
+        requireThat(b.project, "not_a_project_board", 400);
+        const v = await visible(actor, b);
+        if (operation === "goals" && child) {
+          requireThat(Object.hasOwn(v.goals, child), "not_found", 404);
+          send(res, 200, goalDetail(v, child));
+          return;
+        }
+        requireThat(!child, "not_found", 404);
+        const q = z
+          .object({
+            status: z
+              .enum(["insufficient", "derivable", "certified", "refuted"])
+              .optional(),
+            state: z
+              .enum(["proposed", "active", "paused", "retired", "refuted"])
+              .optional(),
+            branch: bindingSchema.shape.branch.optional(),
+          })
+          .strict()
+          .parse(Object.fromEntries(url.searchParams));
+        if (q.branch !== undefined)
+          requireThat(
+            v.branches && Object.hasOwn(v.branches, q.branch),
+            "not_found",
+            404,
+          );
+        send(
+          res,
+          200,
+          operation === "goals"
+            ? {
+                revision: b.revision,
+                goals: goalSummaries(v, { status: q.status, branch: q.branch }),
+              }
+            : {
+                revision: b.revision,
+                decompositions: decompositions(v, q.state),
+              },
         );
         return;
       }

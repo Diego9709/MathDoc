@@ -2,6 +2,7 @@
 // Every write carries TerminusDB-Data-Version, so a concurrent commit is a conflict,
 // never a silent overwrite.
 import { STATUS_CODES } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { DocError, validateName } from "./names.js";
 import {
   DEFAULT_LATEX_PROJECT,
@@ -26,8 +27,25 @@ export interface TerminusConfig {
   password: string;
 }
 
+/** Resends of a request TerminusDB rolled back after exhausting its own retries. */
+const CONFLICT_RETRIES = 3;
+
+function failure(response: Response, text: string): never {
+  if (text.includes("DataVersion") || text.includes("data_version"))
+    throw new DocError("database revision conflict; reload and retry", 409);
+  const status =
+    `${response.status} ${STATUS_CODES[response.status] ?? ""}`.trim();
+  throw new DocError(
+    `TerminusDB ${status}: ${[...text].slice(0, 1500).join("")}`,
+    502,
+  );
+}
+
 export class Terminus {
-  constructor(readonly config: TerminusConfig) {
+  constructor(
+    readonly config: TerminusConfig,
+    private fetcher: typeof fetch = fetch,
+  ) {
     const parsed = new URL(config.url);
     if (!["http:", "https:"].includes(parsed.protocol))
       throw new DocError("invalid database URL");
@@ -42,34 +60,39 @@ export class Terminus {
   ): Promise<Response> {
     const url = new URL(`${this.config.url.replace(/\/$/, "")}/api/${path}`);
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method,
-        headers: {
-          authorization: `Basic ${Buffer.from(`${this.config.user}:${this.config.password}`).toString("base64")}`,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...(version ? { "TerminusDB-Data-Version": version } : {}),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(120000),
-        redirect: "error",
-      });
-    } catch {
-      throw new DocError("connecting to TerminusDB", 502);
-    }
-    if (!response.ok) {
+    for (let attempt = 0; ; attempt++) {
+      let response: Response;
+      try {
+        response = await this.fetcher(url, {
+          method,
+          headers: {
+            authorization: `Basic ${Buffer.from(`${this.config.user}:${this.config.password}`).toString("base64")}`,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+            ...(version ? { "TerminusDB-Data-Version": version } : {}),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: AbortSignal.timeout(120000),
+          redirect: "error",
+        });
+      } catch {
+        throw new DocError("connecting to TerminusDB", 502);
+      }
+      if (response.ok) return response;
       const text = await response.text().catch(() => "");
-      if (text.includes("DataVersion") || text.includes("data_version"))
-        throw new DocError("database revision conflict; reload and retry", 409);
-      const status =
-        `${response.status} ${STATUS_CODES[response.status] ?? ""}`.trim();
-      throw new DocError(
-        `TerminusDB ${status}: ${[...text].slice(0, 1500).join("")}`,
-        502,
-      );
+      // Concurrent writes to TerminusDB's system graph exhaust its internal retries; the
+      // transaction was rolled back, so sending it again is safe (docs/mathdoc.md §2.7.7).
+      if (
+        response.status >= 500 &&
+        text.includes("Transaction retry count exceeded") &&
+        attempt < CONFLICT_RETRIES
+      ) {
+        await delay(100 * 2 ** attempt + Math.random() * 100);
+        continue;
+      }
+      return failure(response, text);
     }
-    return response;
   }
 
   /** Every branch of every MathDoc-labelled database, sorted by (database, branch). */

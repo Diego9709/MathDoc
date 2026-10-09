@@ -21,7 +21,11 @@ if (mode === "migrate") {
 } else {
   const cfg = config();
   const store = new Store(cfg.dsn);
-  const lean = new LeanGround(cfg.leanUrl, cfg.leanToken);
+  const lean = new LeanGround(
+    cfg.leanUrl,
+    cfg.leanToken,
+    cfg.leanTimeoutS * 1000,
+  );
   const docs = new Documents(
     cfg.terminusUrl,
     cfg.terminusUser,

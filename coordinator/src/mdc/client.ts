@@ -98,35 +98,4 @@ export class Client {
       { "if-match": "*", "idempotency-key": key },
     );
   }
-  /**
-   * Send one board command at the current revision. `key` derives the idempotency key from
-   * the revision; a revision conflict means the command did not run, so it is retried.
-   */
-  async command(
-    project: string,
-    body: unknown,
-    key: (revision: number) => string,
-    board?: { revision: number },
-  ): Promise<{ revision: number; result: any; job?: string }> {
-    for (let attempt = 0; ; attempt++) {
-      const revision = (board ?? (await this.board(project))).revision;
-      board = undefined;
-      try {
-        return await this.request(
-          "POST",
-          `/api/coordination/projects/${project}/commands`,
-          body,
-          { "if-match": `"${revision}"`, "idempotency-key": key(revision) },
-        );
-      } catch (e) {
-        if (
-          e instanceof MdcError &&
-          e.reason === "revision_conflict" &&
-          attempt < 5
-        )
-          continue;
-        throw e;
-      }
-    }
-  }
 }

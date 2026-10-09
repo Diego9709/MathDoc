@@ -8,6 +8,8 @@ import {
   activeGoals,
   command,
   endLease,
+  type Grants,
+  UNCHECKED,
   member,
   principalOf,
   readOnly,
@@ -15,6 +17,7 @@ import {
   requireThat,
   takeLease,
 } from "./domain.js";
+export { UNCHECKED } from "./domain.js";
 import { ENVIRONMENT_MIGRATION } from "./proof.js";
 import { TOKEN_MIGRATION } from "./identity.js";
 export interface Job {
@@ -84,19 +87,6 @@ export function metaOf(b: Board): Meta {
       .map((g) => g.key),
   };
 }
-/** Commands checked against the current state rather than the revision the client read. */
-export const UNCHECKED = new Set<Command["type"]>([
-  "claim",
-  "heartbeat",
-  "finish",
-  "submit",
-  "resolve",
-  "import",
-  "sync",
-  "submit_node",
-  "note",
-  "negate",
-]);
 /** Commands that never write the board document: they take the lease path. */
 const LIGHT = new Set<Command["type"]>([
   "claim",
@@ -125,6 +115,13 @@ interface Loaded {
   /** Tasks and attempts as read, to write back only what changed. */
   seen: Map<string, string>;
 }
+/**
+ * Retryable job failures (LeanGround or TerminusDB unreachable, timeouts) back off: 5 s, 15 s,
+ * 45 s, … at most 15 minutes apart, for 8 tries in all (about 40 minutes; §2.7.7).
+ */
+export const JOB_TRIES = 8;
+export const retryDelay = (tries: number) =>
+  Math.min(5 * 3 ** Math.max(tries - 1, 0), 900);
 const leaseLock = (c: Db, project: string) =>
   c.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
     `mdc-lease:${project}`,
@@ -466,6 +463,7 @@ export class Store {
     revision: number | null,
     key: string,
     input: Command,
+    grants: Grants = {},
   ) {
     const checked = !UNCHECKED.has(input.type);
     requireThat(!checked || revision !== null, "revision_required", 428);
@@ -516,7 +514,7 @@ export class Store {
       const old = await replay();
       if (old) return old;
       if (checked) requireThat(b.revision === revision, "revision_conflict");
-      const out = command(b, actor, input, await this.now(c));
+      const out = command(b, actor, input, await this.now(c), grants);
       const job = out.job
         ? await this.enqueue(c, id, actor, out.job.kind, out.job.payload)
         : undefined;
@@ -727,10 +725,16 @@ export class Store {
         )
       ).rows[0];
       if (!valid) return;
-      const willRetry = retry && j.tries < 5;
+      const willRetry = retry && j.tries < JOB_TRIES;
       await c.query(
-        "UPDATE mdc_job SET status=$3,error=$4,expires=NULL,available_at=now()+interval '5 seconds' WHERE id=$1 AND epoch=$2",
-        [j.id, j.epoch, willRetry ? "queued" : "failed", error],
+        "UPDATE mdc_job SET status=$3,error=$4,expires=NULL,available_at=now()+make_interval(secs=>$5) WHERE id=$1 AND epoch=$2",
+        [
+          j.id,
+          j.epoch,
+          willRetry ? "queued" : "failed",
+          error,
+          retryDelay(j.tries),
+        ],
       );
       const loaded = (await this.load(c, j.project, true))!;
       const b = loaded.board;

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { DEFAULT_LEAN_TIMEOUT_S } from "./remote.js";
 
 /**
  * A secret from NAME or from the file named by NAME_FILE (compose secrets). Setting both is
@@ -45,6 +46,8 @@ export interface Config {
   leanUrl: string;
   leanToken: string;
   leanActor: string;
+  /** Seconds a LeanGround call that runs Lean may take (docs/mathdoc.md §2.7.7). */
+  leanTimeoutS: number;
   terminusUrl?: string;
   terminusUser: string;
   terminusPassword?: string;
@@ -83,6 +86,12 @@ export function config(): Config {
     leanUrl: need("LEANGROUND_SERVER_URL"),
     leanToken: secret("LEANGROUND_FACT_TOKEN") ?? need("LEANGROUND_FACT_TOKEN"),
     leanActor: need("LEANGROUND_ACTOR"),
+    leanTimeoutS: z.coerce
+      .number()
+      .int()
+      .min(30)
+      .max(86400)
+      .parse(process.env.LEANGROUND_TIMEOUT_S ?? DEFAULT_LEAN_TIMEOUT_S),
     terminusUrl: process.env.MDC_TERMINUS_URL,
     terminusUser: process.env.MDC_TERMINUS_USER ?? "admin",
     terminusPassword: secret("MDC_TERMINUS_PASSWORD"),

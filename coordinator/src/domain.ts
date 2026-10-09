@@ -638,6 +638,16 @@ export interface Candidate {
   failures: number;
 }
 const FAILED = new Set(["no_progress", "execution_failed", "expired"]);
+/** Failed attempts per goal: no progress, a failed execution or a lapsed lease. */
+export function failureCounts(b: Board): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const a of Object.values(b.attempts)) {
+    const goal = b.tasks[a.task]?.goal;
+    if (a.outcome && FAILED.has(a.outcome) && goal)
+      out.set(goal, (out.get(goal) ?? 0) + 1);
+  }
+  return out;
+}
 /**
  * What to work on next: goals on the frontier of the branches' routes (needed, unsolved, with no
  * active decomposition of their own), each scored by the routes needing it, weighted by how
@@ -690,6 +700,7 @@ export function rankGoals(b: Board, branch?: string): Candidate[] {
   const decomposed = new Set(
     usable.filter((f) => f.premises.length).map((f) => f.goal),
   );
+  const failed = failureCounts(b);
   const out: Candidate[] = [];
   for (const t of Object.values(b.tasks)) {
     const g = b.goals[t.goal];
@@ -703,10 +714,7 @@ export function rankGoals(b: Board, branch?: string): Candidate[] {
       !score.has(t.goal)
     )
       continue;
-    const failures = Object.values(b.attempts).filter(
-      (a) =>
-        a.outcome && FAILED.has(a.outcome) && b.tasks[a.task]?.goal === t.goal,
-    ).length;
+    const failures = failed.get(t.goal) ?? 0;
     out.push({
       goal: t.goal,
       task: t.id,
@@ -988,17 +996,36 @@ export const commandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("accept"), run: short }).strict(),
 ]);
 export type Command = z.infer<typeof commandSchema>;
+/** Commands checked against the current state rather than the revision the client read. */
+export const UNCHECKED = new Set<Command["type"]>([
+  "claim",
+  "heartbeat",
+  "finish",
+  "submit",
+  "resolve",
+  "import",
+  "sync",
+  "submit_node",
+  "note",
+  "negate",
+]);
 /** What clients send: fields with defaults may be omitted. */
 export type CommandInput = z.input<typeof commandSchema>;
 export interface JobInput {
   kind: string;
   payload: Record<string, unknown>;
 }
+/** Rights the HTTP layer established from document roles (docs/mathdoc.md §4.3). */
+export interface Grants {
+  /** The actor may write the branch the command names (§2.7.7: editors pick their route). */
+  editsBranch?: boolean;
+}
 export function command(
   b: Board,
   actor: string,
   c: Command,
   now: number,
+  grants: Grants = {},
 ): { result: unknown; job?: JobInput } {
   member(b, actor);
   const frozen = readOnly(b);
@@ -1194,7 +1221,8 @@ export function command(
       };
     }
     case "pick": {
-      owner(b, actor);
+      // The owner, or a member who may write the branch: its route is part of its content.
+      if (!grants.editsBranch) owner(b, actor);
       const branch = attached(b, c.branch);
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       if (c.certificate === null) delete branch.picks[c.goal];

@@ -15,13 +15,14 @@ import { fileURLToPath } from "node:url";
 import { Client, MdcError } from "./mdc/client.js";
 import { find as findWorkspace } from "./mdc/workspace.js";
 import * as verbs from "./mdc/verbs.js";
+import * as maintain from "./mdc/maintain.js";
 import { serve as serveMcp } from "./mdc/mcp.js";
 
 const USAGE = `usage: mdc [-p DATABASE/BRANCH] <command>
 
 server:     status | init DATABASE | remove DATABASE
             grant ACTOR owner|editor|viewer|none
-branch:     branch new NAME | branch del | history | export | import FILE
+branch:     branch new NAME [--attach] [--pick GOAL=CERT]... | branch del | history | export | import FILE
             project latex show | project latex set --preamble FILE --bib FILE
 graph:      graph check|roots|full | search QUERY [-n N]
 nodes:      show REF | new -t TITLE [--parent REF] | del REF | rename REF TITLE
@@ -31,6 +32,9 @@ nodes:      show REF | new -t TITLE [--parent REF] | del REF | rename REF TITLE
 proof:      proof env [set]             (the database's environment; set reads JSON from stdin)
             proof submit REF [--budget N] [--members a,b]   (create the project or attach the branch)
             proof list [REF] | proof status ID | proof command ID   (command JSON from stdin)
+goals:      goals [--status S] [--branch B] | goal GOAL   (the project's goals; one goal in full)
+            review [--state S] | review CERT --accept|--pause|--retire [-m COMMENT]
+            pick GOAL CERT|auto [--branch B]   (the branch's route at GOAL; owners and its editors)
 work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]
             prove FILE [--wait] [--dry-run] [--again]
             split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]
@@ -41,7 +45,10 @@ work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with 
             mcp [--dir DIR]            (the work commands as MCP tools over stdio)
 tokens:     token new NAME [--scope work,maintain,edit] [--expires 30d|12h|ISO-DATE]
             token list | token revoke NAME   (delegated tokens act as YOU/NAME)
-            (GOAL: a GoalKey, a unique prefix of 8+ hex digits, or a node title or UUID)
+            (GOAL: a GoalKey, a unique prefix of 8+ hex digits, or a node title or UUID;
+             CERT: a certificate ID or a unique prefix of 8+ hex digits)
+Board commands sent by review, pick, branch new and proof command can be rerun after a lost
+reply: they take effect once (records in MDC_STATE_DIR, default ~/.local/state/mdc).
 Write commands take --revision REV to require the revision printed by show.`;
 
 class UsageError extends Error {}
@@ -66,6 +73,10 @@ function parse(argv: string[]) {
     "--again",
     "--no-claim",
     "--claim",
+    "--accept",
+    "--pause",
+    "--retire",
+    "--attach",
   ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -206,30 +217,40 @@ export async function main(
     );
     return undefined;
   }
-  if (WORK.has(command)) {
-    const ctx: verbs.VerbContext = {
-      client,
-      cwd,
-      project,
-      flag,
-      has: (name) => flags[name] !== undefined,
-      now: io.now ?? Date.now,
-      sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
-    };
+  const ctx: verbs.VerbContext = {
+    client,
+    cwd,
+    project,
+    stateDir: maintain.stateDir(env),
+    flag,
+    has: (name) => flags[name] !== undefined,
+    now: io.now ?? Date.now,
+    sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  };
+  const usage = async <T>(run: () => Promise<T>) => {
     try {
-      if (command === "pull") return await verbs.pull(ctx, args[0]);
-      if (command === "prove") return await verbs.submit(ctx, args[0], "prove");
-      if (command === "split") return await verbs.submit(ctx, args[0], "split");
-      if (command === "note") return await verbs.note(ctx, args[0]);
-      if (command === "refute") return await verbs.refute(ctx, args[0]);
-      if (command === "next") return await verbs.next(ctx);
-      return await verbs.done(ctx, args[0]);
+      return await run();
     } catch (e) {
       if (e instanceof MdcError && e.reason === "usage")
         throw new UsageError(`${e.details}\n\n${USAGE}`);
       throw e;
     }
-  }
+  };
+  // Proof work and goal commands: a usage error from them prints the usage text.
+  const run: Record<string, () => Promise<unknown>> = {
+    pull: () => verbs.pull(ctx, args[0]),
+    prove: () => verbs.submit(ctx, args[0], "prove"),
+    split: () => verbs.submit(ctx, args[0], "split"),
+    done: () => verbs.done(ctx, args[0]),
+    note: () => verbs.note(ctx, args[0]),
+    refute: () => verbs.refute(ctx, args[0]),
+    next: () => verbs.next(ctx),
+    goals: () => maintain.goals(ctx),
+    goal: () => maintain.goal(ctx, args[0]),
+    review: () => maintain.review(ctx, args[0]),
+    pick: () => maintain.pick(ctx, args[0], args[1]),
+  };
+  if (Object.hasOwn(run, command)) return usage(run[command]);
 
   switch (command) {
     case "token": {
@@ -270,12 +291,17 @@ export async function main(
         role: need(args[1], "ROLE"),
       });
     case "branch":
-      if (args[0] === "new")
-        return directory({
-          action: "new_branch",
-          project: branch(),
-          name: need(args[1], "NAME"),
-        });
+      if (args[0] === "new") {
+        branch();
+        return usage(() =>
+          maintain.branchNew(
+            ctx,
+            need(args[1], "NAME"),
+            flags["--pick"] ?? [],
+            flags["--attach"] !== undefined,
+          ),
+        );
+      }
       if (args[0] === "del")
         return directory({ action: "delete_branch", project: branch() });
       break;
@@ -447,17 +473,13 @@ export async function main(
       if (sub === "status")
         return request("GET", coordination(`/projects/${need(ref, "ID")}`));
       if (sub === "command") {
-        const id = need(ref, "ID");
-        const board = await request("GET", coordination(`/projects/${id}`));
-        return request(
-          "POST",
-          coordination(`/projects/${id}/commands`),
+        // Rerunning after a lost reply replays it (src/mdc/maintain.ts); the reply is the server's.
+        const { resent: _, ...reply } = await maintain.sendRecorded(
+          ctx,
+          need(ref, "ID"),
           JSON.parse(await input()),
-          {
-            "if-match": `"${board.revision}"`,
-            "idempotency-key": crypto.randomUUID(),
-          },
         );
+        return reply;
       }
       break;
     }
