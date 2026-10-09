@@ -5,7 +5,11 @@ Build: docker build -t mathdoc-runtime:local .
 Run:   python3 tests/docker-smoke.py [--image mathdoc-runtime:local]
 
 LeanGround is not started here: the worker points at an unreachable address and must
-stay up anyway. The deployment bind-mounts secrets/ from a temporary directory: with
+stay up anyway. With MDC_SMOKE_LEANGROUND_URL (as seen from the containers, for example
+http://host.docker.internal:8765), MDC_SMOKE_LEANGROUND_TOKEN and MDC_SMOKE_LEANGROUND_ACTOR
+set, the deployment uses that LeanGround instead and an agent proves a theorem through it
+(docs/mathdoc.md §2.7.7; MDC_SMOKE_BASE_KEY, default 1, must contain Nat).
+The deployment bind-mounts secrets/ and the work directory from a temporary directory: with
 colima or another VM that shares only the home directory, set TMPDIR under $HOME.
 """
 import argparse
@@ -16,6 +20,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -34,6 +39,13 @@ def main():
         port = sock.getsockname()[1]
     project_name = "mathdoc-smoke-" + secrets.token_hex(4)
     token = secrets.token_hex(24)
+    agent_token = secrets.token_hex(24)
+    lean_url = os.environ.get("MDC_SMOKE_LEANGROUND_URL")
+    lean_token = os.environ.get("MDC_SMOKE_LEANGROUND_TOKEN")
+    lean_actor = os.environ.get("MDC_SMOKE_LEANGROUND_ACTOR")
+    base_key = os.environ.get("MDC_SMOKE_BASE_KEY", "1")
+    if lean_url and not (lean_token and lean_actor):
+        raise SystemExit("MDC_SMOKE_LEANGROUND_URL needs MDC_SMOKE_LEANGROUND_TOKEN and _ACTOR")
     # Never inherit a checkout's production passwords, port or Compose settings.
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("MDC_", "MATHDOC_", "COMPOSE_"))}
@@ -45,11 +57,13 @@ def main():
         # A real external origin exercises reverse-proxy Host/Origin handling.
         origin = f"http://mathdoc.test:{port}"
         (deployment / "mathdoc.env").write_text(
-            "LEANGROUND_SERVER_URL=http://127.0.0.1:9\nLEANGROUND_ACTOR=mathdoc-coordinator\n"
+            f"LEANGROUND_SERVER_URL={lean_url or 'http://127.0.0.1:9'}\n"
+            f"LEANGROUND_ACTOR={lean_actor or 'mathdoc-coordinator'}\n"
             f"MDC_PUBLIC_ORIGIN={origin}\n")
         (deployment / "secrets/actors.json").write_text(
-            json.dumps({"smoke": {"token": token, "admin": True}}))
-        (deployment / "secrets/leanground-token").write_text("unused-token\n")
+            json.dumps({"smoke": {"token": token, "admin": True},
+                        "agent": {"token": agent_token, "admin": False}}))
+        (deployment / "secrets/leanground-token").write_text(f"{lean_token or 'unused-token'}\n")
         assert not (deployment / "Dockerfile").exists()
         assert not (deployment / ".env").exists()
         compose = ["docker", "compose", "--project-directory", str(deployment),
@@ -144,6 +158,27 @@ def main():
             assert preview["html"] and not preview["diagnostics"], preview
             view = json.loads(http(f"/p/smoke/main/api/node/{node['fnode']}/view"))
             assert view["node"]["formalization"]["lean_certification"] == {"status": "not_submitted"}
+
+            def work(directory, *arguments, who=token, check=True):
+                """The deployment's `mdc` for proof work, in a host directory."""
+                result = subprocess.run([str(deployment / "mdc"), *arguments], cwd=directory,
+                                        env={**env, "MDC_TOKEN": who}, text=True,
+                                        capture_output=True, timeout=900)
+                if check and result.returncode:
+                    raise RuntimeError(f"mdc {arguments}: {result.stdout}\n{result.stderr}")
+                return result
+
+            print("Checking proof work commands on the caller's directory...", flush=True)
+            desk = Path(temporary) / "desk"
+            desk.mkdir()
+            refused = work(desk, "-p", "smoke/main", "pull", "Container proof", check=False)
+            assert refused.returncode == 1, refused
+            assert json.loads(refused.stderr.strip().splitlines()[-1])["reason"] == "no_project", refused
+            record = desk / ".mdc" / "workspace.json"
+            assert json.loads(record.read_text())["server"] == "http://127.0.0.1:17843"
+            assert record.stat().st_uid == os.getuid()
+            if lean_url:
+                prove_through_leanground(cli, work, Path(temporary), agent_token, base_key)
             for action in ("restart", "recreate", "down-up"):
                 print(f"Checking {action}, credentials and persistent state...", flush=True)
                 if action == "restart":
@@ -201,6 +236,60 @@ def main():
             raise
         finally:
             run("down", "--volumes", "--remove-orphans", timeout=120)
+
+
+def prove_through_leanground(cli, work, temporary, agent_token, base_key):
+    """docs/mathdoc.md §2.7.7 acceptance 7: owner and agent prove a theorem through the deployment."""
+    print("Proving a theorem through the deployment and the real LeanGround...", flush=True)
+
+    def poll(what, read, timeout=900):
+        deadline = time.monotonic() + timeout
+        while True:
+            value = read()
+            if value:
+                return value
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"timed out waiting for {what}")
+            time.sleep(2)
+
+    cli("init", "proof")
+    cli("-p", "proof/main", "grant", "agent", "viewer")
+    node = cli("-p", "proof/main", "new", "-t", "two_eq")
+    cli("-p", "proof/main", "edit", node["fnode"], content="theorem two_eq : 1 + 1 = 2 := sorry\n")
+    cli("-p", "proof/main", "proof", "env", "set", content=json.dumps({"base_key": int(base_key)}))
+    project = cli("-p", "proof/main", "proof", "submit", node["fnode"], "--budget", "10",
+                  "--members", "agent")["id"]
+    poll("the project to be ready", lambda: cli("-p", "proof/main", "proof", "status", project)["ready"])
+
+    # The agent works in its own directory on the host, with its own token.
+    desk = temporary / "agent"
+    desk.mkdir()
+    pulled = json.loads(work(desk, "-p", "proof/main", "pull", "two_eq", who=agent_token).stdout)
+    goal_file = desk / pulled["file"]
+    assert goal_file.stat().st_uid == os.getuid()
+    goal_file.write_text(goal_file.read_text().replace(":= by\n  sorry\n", ":= by\n  rfl\n"))
+    proved = json.loads(work(desk, "prove", pulled["file"], "--wait", who=agent_token).stdout)
+    assert proved["status"] == "certified", proved
+    finished = json.loads(work(desk, "done", pulled["file"], who=agent_token).stdout)
+    assert finished["outcome"] == "submitted", finished
+
+    # The owner assembles main's route and writes the result back.
+    run = cli("-p", "proof/main", "proof", "command", project, content=json.dumps(
+        {"type": "assemble", "component": "lean-worker", "branch": "main"}))["result"]["id"]
+
+    def assembled():
+        status = cli("-p", "proof/main", "proof", "status", project)["runs"][run]["status"]
+        if status == "failed":
+            raise RuntimeError(cli("-p", "proof/main", "proof", "status", project)["runs"][run])
+        return status == "certified"
+    poll("the assembly", assembled)
+    cli("-p", "proof/main", "proof", "command", project, content=json.dumps({"type": "accept", "run": run}))
+    poll("the writeback", lambda: cli("-p", "proof/main", "show", node["fnode"])
+         ["formalization"]["lean_certification"].get("status") == "certified")
+    shown = cli("-p", "proof/main", "show", node["fnode"])
+    lean = next(b for b in shown["blocks"] if b["srctype"] == "lean")
+    assert lean["metadata"].get("certification_id"), lean
+    print("Proved two_eq through the deployment: pull, prove, done, assemble, accept.", flush=True)
 
 
 if __name__ == "__main__":
