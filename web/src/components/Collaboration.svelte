@@ -6,6 +6,7 @@
   import { onDestroy, onMount } from "svelte";
   import { activeGoals, branchView, branchesNeeding, coordination, currentBranch, goalName, goalStatement, readOnlyReason, routeCloses, spentBy, type Board, type Command } from "../lib/coordination";
   import { errMsg } from "../lib/format";
+  import { projectsApi } from "../lib/api";
   import { modal } from "../lib/modal";
   let { project = null, onClose, onOpenNode }: {
     project?: string | null; onClose: () => void; onOpenNode?: (fnode: string) => void;
@@ -17,6 +18,8 @@
   let board = $state<Board | null>(null), me = $state<string>("");
   // A delegated token (`person/name`) acts for its person, within its scopes (§2.7.4).
   let principal = $state<string>(""), scopes = $state<string[] | null>(null);
+  // §2.7.7: editors of this branch pick its route too; the role comes from the directory.
+  let writesBranch = $state(false);
   let error = $state<string | null>(null), busy = $state(false);
   let jobs = $state<Awaited<ReturnType<typeof coordination.jobs>>>([]);
   // §2.7.5: the task board follows the server's recommendation order.
@@ -47,6 +50,8 @@
       me = who.actor;
       principal = who.principal ?? who.actor;
       scopes = who.scopes ?? null;
+      const role = branch ? (await projectsApi.list()).projects[`${branch.database}/${branch.branch}`]?.role : undefined;
+      writesBranch = role === "admin" || role === "owner" || role === "editor";
     } catch { /* shown by refresh */ }
     await refresh();
     timer = setInterval(() => void refresh(), 5000);
@@ -65,6 +70,7 @@
     busy = false;
   }
   const isOwner = $derived(board !== null && board.owner === principal && (scopes === null || scopes.includes("maintain")));
+  const canPick = $derived(isOwner || (board !== null && board.members.includes(principal) && writesBranch && (scopes === null || scopes.includes("edit"))));
   const goals = $derived(board ? Object.values(board.goals) : []);
   const facts = $derived(board ? Object.values(board.facts) : []);
   const openAttempts = $derived(board ? Object.values(board.attempts).filter((a) => !a.outcome) : []);
@@ -291,7 +297,7 @@
                 {#if f.review}<span class="muted" title={f.review.comment ?? ""}>· {f.review.state} by {f.review.actor}{f.review.comment ? `: ${f.review.comment}` : ""}</span>{/if}
                 {#if onRoute.has(f.id)}<span class="route">on route</span>{/if}
                 {#each pickedBy(f.id) as name}<span class="route">picked by {name}</span>{/each}
-                {#if isOwner && view && board.project && branch}
+                {#if canPick && view && board.project && branch}
                   {#if view.picks[f.goal] === f.id}
                     <button disabled={busy || !!frozen} onclick={() => void run({ type: "pick", branch: branch.branch, goal: f.goal, certificate: null })} title="Let assembly choose this goal's decomposition">Unpick</button>
                   {:else if f.state === "active"}

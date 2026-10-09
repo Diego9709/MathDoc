@@ -4,7 +4,7 @@
   import ProofEnvironmentForm from "./ProofEnvironmentForm.svelte";
   let { onClose }: { onClose: () => void } = $props();
   // The legacy Lake project is preserved unchanged (docs/mathdoc.md §4.2); Lean is checked by LeanGround
-  // in the proof environment set per branch.
+  // in the database's proof environment, shared by all its branches.
   let tab = $state<"proof" | "latex">("proof");
   let form = $state<{canClose: () => boolean}>();
   function close() { if (form?.canClose()) onClose(); }
