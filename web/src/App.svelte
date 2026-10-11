@@ -37,6 +37,7 @@
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import ProjectSettings from "./components/ProjectSettings.svelte";
   import Collaboration from "./components/Collaboration.svelte";
+  import Account from "./components/Account.svelte";
   import type { NodeDetail } from "./lib/types";
   import {
     confirmDiscardDrafts,
@@ -294,6 +295,16 @@
       initialNavigationRetry = null;
     }
   });
+
+  // §4.9: a writeback committed into this branch while the collaboration dialog was open. The
+  // view reloads at once unless that would discard edits; then the banner asks for a refresh.
+  function documentChanged() {
+    if (hasUnsavedDrafts()) {
+      refreshError = "A proof was written back into this branch. Save or discard your edits, then refresh to see it.";
+      return;
+    }
+    void refreshView();
+  }
 
   async function refreshView() {
     if (refreshing) return;
@@ -575,6 +586,7 @@
         {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />
         {:else}<Moon size={16} strokeWidth={1.8} />{/if}
       </button>
+      <Account />
   </header>
   {#if nodeSession.navigationError || refreshError}
     <div class="app-error" role="alert">
@@ -706,7 +718,7 @@
 {#if overlay.kind === "project"}
   <ProjectSettings onClose={() => overlay = { kind: "none" }} />
 {:else if overlay.kind === "collaboration"}
-  <Collaboration project={overlay.project} onClose={() => overlay = { kind: "none" }} onOpenNode={openNode} />
+  <Collaboration project={overlay.project} onClose={() => overlay = { kind: "none" }} onOpenNode={openNode} onDocumentChanged={documentChanged} />
 {:else if overlay.kind === "search"}
   <SearchOverlay
     disabled={historyNavigating}

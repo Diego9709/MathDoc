@@ -7,7 +7,7 @@
   const certificationLabels = {
     not_submitted: "Not submitted to LeanGround", insufficient: "Insufficient evidence",
     derivable: "Derivable", certified: "Certified",
-    stale: "Changed since submission", rejected: "Not accepted",
+    stale: "Changed since submission", rejected: "Not accepted", registered: "Registered definition",
   };
   // Two dimensions (docs/mathdoc.md §4.5): a local check is only an editing aid; certification comes
   // from LeanGround. The legacy backend reports only the local check.
@@ -22,9 +22,11 @@
   });
   const shown = $derived(certification === undefined ? status : certification === null ? "no_code" : certification.status);
   const label = $derived(`${language}: ${text}`);
+  // A refusal's explanation (Lean's messages, for a proof LeanGround rejected) shows on hover.
+  const hover = $derived(certification?.status === "rejected" && certification.details ? `${label}\n\n${certification.details}` : label);
 </script>
 
-<span class="formal-status" data-status={shown} title={label} aria-label={label}>
+<span class="formal-status" data-status={shown} title={hover} aria-label={label}>
   <span class="status-light" aria-hidden="true"></span>
   <span class="formal-language">{language}</span>
   {#if !compact}<span class="status-text">{text}</span>{/if}
@@ -67,7 +69,8 @@
     background: var(--mdc-accent);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-accent) 22%, transparent);
   }
-  .formal-status[data-status="verified"] .status-light, .formal-status[data-status="certified"] .status-light {
+  .formal-status[data-status="verified"] .status-light, .formal-status[data-status="certified"] .status-light,
+  .formal-status[data-status="registered"] .status-light {
     background: var(--mdc-accent-down);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-accent-down) 22%, transparent);
   }

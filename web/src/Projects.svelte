@@ -3,6 +3,7 @@
   import { ArrowUpRight, FolderOpen, GitBranch, GitBranchPlus, Moon, Plus, RefreshCw, Search, Sun, Trash2 } from "@lucide/svelte";
   import { projectsApi, isAbortError, type ServiceStatus } from "./lib/api";
   import ProjectCreate from "./components/ProjectCreate.svelte";
+  import Account from "./components/Account.svelte";
   import { applyTheme, currentTheme, observeTheme, type Theme } from "./lib/theme";
 
   let { onReady }: { onReady?: () => void } = $props();
@@ -98,6 +99,7 @@
     <button class="header-theme" onclick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
       {#if theme === "dark"}<Sun size={16} strokeWidth={1.8} />{:else}<Moon size={16} strokeWidth={1.8} />{/if}
     </button>
+    <Account />
   </header>
 
   <div class="page-head">

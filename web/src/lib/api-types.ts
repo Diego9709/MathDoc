@@ -11,15 +11,16 @@ export type FormalCodeStatus = "no_code" | "unverified" | "verified";
  * `not_submitted`: the node is not bound to a proof request yet. `insufficient` with
  * `truncated` means the search stopped early, not that no route exists. `stale`: the Lean
  * text or a definition it uses changed after submission. `rejected`: the node could not be
- * converted or LeanGround refused it (`reason`).
+ * converted or LeanGround refused it (`reason`). `registered`: a definition node whose
+ * definitions LeanGround registered (`definition_ids`); definitions have no goal to prove.
  */
 export type LeanCertification =
   | { status: "not_submitted" }
   | {
-      status: "insufficient" | "derivable" | "certified" | "stale" | "rejected",
+      status: "insufficient" | "derivable" | "certified" | "stale" | "rejected" | "registered",
       /** `branch`: whose conversion of the node is shown (absent for stage 4 requests). */
       project: string, branch?: string, goal?: string, minimum_trust: string, checked_at: string | null,
-      truncated: boolean, reason?: string, details?: string,
+      truncated: boolean, reason?: string, details?: string, definition_ids?: string[],
     };
 
 /** `lean`/`rocq`: the local check. `lean_certification`: the LeanGround dimension. */

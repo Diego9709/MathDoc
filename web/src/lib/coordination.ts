@@ -1,6 +1,6 @@
 // Collaboration API (docs/mathdoc.md §4.3): the same /api/coordination endpoints serve people and
 // agents. Commands carry the project revision (If-Match) and an idempotency key.
-import { fetchJson } from "./api";
+import { ApiError, fetchJson } from "./api";
 import { projectName } from "./project-path";
 
 export type Trust = "claimed" | "audited" | "trusted";
@@ -43,6 +43,8 @@ export interface Run {
   /** Project boards: the branch whose route was assembled and which receives the writeback. */
   branch?: string;
   certification_id?: string; failure?: string; retryable?: boolean;
+  /** LeanGround's explanation of the failure, e.g. Lean's messages. */
+  details?: string;
   route: { root: string; steps: { certificate_id: string; providers: Record<string, string> }[] };
 }
 export interface NodeBinding {
@@ -56,6 +58,16 @@ export interface Writeback {
   reason?: string; details?: string; created: string[]; updated: string[];
   contract?: { operations: { kind: string; node_id: string; certification_id?: string; definition_id?: string }[] };
 }
+/** One change accepting an assembly would make, with the node's Lean text before and after. */
+export interface PlannedChange {
+  kind: "update_lean_block" | "create_goal_node" | "create_definition_node";
+  node: string; title: string; before: string | null; after: string;
+}
+/** What accepting an assembly writes (§4.9): the batch and the assembled source; or why it would abort; or the batch written. */
+export type WritebackPreview =
+  | { status: "ready"; assembled: string | null; version: string; changes: PlannedChange[] }
+  | { status: "conflict"; assembled: string | null; version: string; reason: string; details: string }
+  | { status: "written"; writeback: Writeback };
 export interface ProofRequest {
   database: string; branch: string; node: string; environment_id: string; bound: boolean;
   stale: boolean; identity?: string; error?: string; checked_version?: string;
@@ -87,6 +99,9 @@ export interface Board {
   nodes?: Record<string, NodeBinding>;
   writebacks?: Record<string, Writeback>;
 }
+type CommandReply = { revision: number; result: unknown; job?: string };
+/** Commands the coordinator checks against the current board (coordinator/src/domain.ts UNCHECKED). */
+const UNCHECKED = new Set(["claim", "heartbeat", "finish", "submit", "resolve", "import", "sync", "submit_node", "note", "negate"]);
 export type Command =
   | { type: "sync" }
   | { type: "claim"; task: string; allocation: number; ttl: number }
@@ -129,18 +144,36 @@ export const coordination = {
   project: (id: string) => fetchJson<Board>(`${base}/projects/${encodeURIComponent(id)}`),
   create: (input: { document: { database: string; branch: string; node: string }; members: string[]; budget: number; title?: string }) =>
     fetchJson<Board>(`${base}/projects`, json("POST", input, { "idempotency-key": crypto.randomUUID() })),
-  command: (board: Pick<Board, "id" | "revision">, command: Command) =>
-    fetchJson<{ revision: number; result: unknown; job?: string }>(
-      `${base}/projects/${encodeURIComponent(board.id)}/commands`,
-      json("POST", command, { "if-match": `"${board.revision}"`, "idempotency-key": crypto.randomUUID() }),
-    ),
+  /**
+   * Send one command. Commands checked against the current board go with `If-Match: *`; the
+   * others carry the revision shown, and when it is outdated (a job wrote the board meanwhile)
+   * they are sent again at the latest revision, as `mdc` does (docs/mathdoc.md §2.7.7).
+   */
+  command: async (board: Pick<Board, "id" | "revision">, command: Command) => {
+    const path = `${base}/projects/${encodeURIComponent(board.id)}/commands`;
+    const key = crypto.randomUUID();
+    if (UNCHECKED.has(command.type))
+      return fetchJson<CommandReply>(path, json("POST", command, { "if-match": "*", "idempotency-key": key }));
+    let revision = board.revision;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fetchJson<CommandReply>(path, json("POST", command, { "if-match": `"${revision}"`, "idempotency-key": key }));
+      } catch (e) {
+        // A conflicting revision means the command did not run.
+        if (!(e instanceof ApiError && e.message === "revision_conflict" && attempt < 3)) throw e;
+        revision = (await fetchJson<Board>(`${base}/projects/${encodeURIComponent(board.id)}`)).revision;
+      }
+    }
+  },
   /** The goals most worth working on, best first (§2.7.5). */
   next: (id: string, limit = 200) =>
     fetchJson<{ revision: number; candidates: { goal: string; task: string; score: number; branches: string[]; failures: number }[] }>(
       `${base}/projects/${encodeURIComponent(id)}/next?limit=${limit}`,
     ),
+  preview: (id: string, run: string) =>
+    fetchJson<WritebackPreview>(`${base}/projects/${encodeURIComponent(id)}/runs/${encodeURIComponent(run)}/preview`),
   jobs: (id: string) =>
-    fetchJson<{ id: string; actor: string; kind: string; status: string; tries: number; error: string | null; created_at: string }[]>(
+    fetchJson<{ id: string; actor: string; kind: string; status: string; tries: number; error: string | null; details: string | null; created_at: string }[]>(
       `${base}/projects/${encodeURIComponent(id)}/jobs`,
     ),
 };
@@ -152,24 +185,43 @@ export function branchView(board: Board, branch: string): BranchState | null {
   return { request: board.request, nodes: board.nodes ?? {}, picks: {}, writebacks: board.writebacks ?? {} };
 }
 /**
- * Whether a branch's route reaches complete proofs: the root proved through active facts,
- * each picked goal only through its pick (the coordinator's route selection). A goal's own
- * status is shared by all branches; this is the branch's.
+ * The certificates an assembly of a branch would use, chosen as the coordinator's selectRoute
+ * (coordinator/src/domain.ts) does: active facts, a picked goal only through its pick, fewest
+ * premises first, then by ID. Null while the route does not reach complete proofs.
+ */
+export function branchRoute(board: Board, picks: Record<string, string>): Set<string> | null {
+  const facts = Object.values(board.facts)
+    .filter((f) => f.available && f.state === "active" && (!Object.hasOwn(picks, f.goal) || picks[f.goal] === f.id))
+    .sort((a, c) => a.premises.length - c.premises.length || a.id.localeCompare(c.id));
+  const solved = new Map<string, Fact>();
+  for (let before = -1; before !== solved.size; ) {
+    before = solved.size;
+    for (const f of facts)
+      if (!solved.has(f.goal) && f.premises.every((p) => solved.has(p))) solved.set(f.goal, f);
+  }
+  if (!solved.has(board.root)) return null;
+  // Only the certificates the root's proof reaches.
+  const used = new Set<string>();
+  const visit = (goal: string) => {
+    const f = solved.get(goal)!;
+    if (used.has(f.id)) return;
+    used.add(f.id);
+    f.premises.forEach(visit);
+  };
+  visit(board.root);
+  return used;
+}
+/**
+ * Whether a branch's route reaches complete proofs. A goal's own status is shared by all
+ * branches; this is the branch's.
  */
 export function routeCloses(board: Board, picks: Record<string, string>): boolean {
-  const facts = Object.values(board.facts).filter(
-    (f) => f.available && f.state === "active" && (!Object.hasOwn(picks, f.goal) || picks[f.goal] === f.id),
-  );
-  const solved = new Set<string>();
-  for (let changed = true; changed; ) {
-    changed = false;
-    for (const f of facts)
-      if (!solved.has(f.goal) && f.premises.every((p) => solved.has(p))) {
-        solved.add(f.goal);
-        changed = true;
-      }
-  }
-  return solved.has(board.root);
+  return branchRoute(board, picks) !== null;
+}
+/** The committed writeback of a run, if any: accepting the run again would write nothing. */
+export function writtenBack(board: Board, run: Run): Writeback | null {
+  const records = run.branch ? board.branches?.[run.branch]?.writebacks : board.writebacks;
+  return Object.values(records ?? {}).find((w) => w.run === run.id && w.status === "committed") ?? null;
 }
 /** Why the board takes no commands, as shown to people; null when it does. */
 export function readOnlyReason(board: Board): string | null {
@@ -246,4 +298,102 @@ export function spentBy(board: Board): { actor: string; spent: number; reserved:
     out.set(a.actor, row);
   }
   return [...out.values()].sort((x, y) => y.spent - x.spent || x.actor.localeCompare(y.actor));
+}
+
+/** What a goal status means, for people (coordinator/src/domain.ts `recompute`). */
+export const goalStatusHelp: Record<Goal["status"], string> = {
+  certified: "Proved: one certificate proves it with no premises left.",
+  derivable: "Proved by combining certificates: a decomposition whose premises are proved. Assembling turns it into one complete proof.",
+  insufficient: "Not proved yet: a goal it depends on still has no proof.",
+};
+/** What a converted node's state means, for people (coordinator/src/proof.ts, worker.ts). */
+export const nodeStateHelp: Record<NodeBinding["state"], string> = {
+  pending: "Converted, waiting to be submitted to LeanGround.",
+  open: "Its proof is still sorry: the node is a goal waiting for a proof.",
+  submitted: "LeanGround checked its proof and issued a certificate: a complete proof, or one from the premises it uses.",
+  registered: "A definition registered with LeanGround, so statements can use it.",
+  rejected: "Refused by the conversion or by LeanGround; the reason follows.",
+  certified: "An accepted assembly wrote a certified proof into this node.",
+};
+
+/**
+ * Goals proved through active certificates, as the coordinator's `rankGoals` counts them; with
+ * `picks`, a picked goal only through its pick. A goal's status also counts certificates not
+ * active (proposed, paused), which no route uses.
+ */
+export function solvedGoals(board: Board, picks: Record<string, string> = {}): Set<string> {
+  const usable = Object.values(board.facts).filter(
+    (f) => f.available && f.state === "active" && (!Object.hasOwn(picks, f.goal) || picks[f.goal] === f.id),
+  );
+  const solved = new Set<string>();
+  for (let before = -1; before !== solved.size; ) {
+    before = solved.size;
+    for (const f of usable) if (f.premises.every((p) => solved.has(p))) solved.add(f.goal);
+  }
+  return solved;
+}
+/**
+ * The goals a branch's proof still waits for: reachable from the root through active
+ * certificates (a picked goal only through its pick), not proved that way, and with no active
+ * certificate of their own. Where every unproved goal has one (a cycle), all unproved goals.
+ */
+export function openGoals(board: Board, picks: Record<string, string>): string[] {
+  const usable = Object.values(board.facts).filter(
+    (f) => f.available && f.state === "active" && (!Object.hasOwn(picks, f.goal) || picks[f.goal] === f.id),
+  );
+  const solved = solvedGoals(board, picks);
+  const reach = new Set([board.root]);
+  for (let before = -1; before !== reach.size; ) {
+    before = reach.size;
+    for (const f of usable) if (reach.has(f.goal) && !solved.has(f.goal)) for (const p of f.premises) reach.add(p);
+  }
+  const unproved = [...reach].filter((g) => !solved.has(g));
+  const bare = unproved.filter((g) => !usable.some((f) => f.goal === g));
+  return bare.length ? bare : unproved;
+}
+
+/** The collaboration dialog's views. */
+export type CollabView = "overview" | "tasks" | "decompositions" | "review";
+/** What a branch's proof waits for, in plain words, and the view that does it. */
+export interface NextStep { tone: "done" | "todo" | "wait"; text: string; view?: CollabView }
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/**
+ * The next step on a project board's branch for the reader (`owner`: the board's owner).
+ * Null where the dialog shows a warning instead: read-only boards, failed conversions or
+ * syncs, and a branch whose document changed after it was converted.
+ */
+export function nextStep(board: Board, branch: string, owner: boolean): NextStep | null {
+  if (!board.project || readOnlyReason(board)) return null;
+  const view = board.branches?.[branch];
+  if (!view) return { tone: "todo", text: "This branch is not attached to the project yet. Attach it to prove its document here.", view: "overview" };
+  if (view.request.error || board.sync_error || view.request.stale) return null;
+  if (!board.ready || !view.request.bound)
+    return { tone: "wait", text: "Converting this branch's nodes and submitting them to LeanGround…" };
+  if (board.goals[board.root]?.refuted)
+    return { tone: "done", text: `Refuted: the negation of ${goalName(board, board.root)} has a complete proof, so the theorem is false.` };
+  const last = Object.values(board.runs).filter((r) => r.branch === branch).at(-1);
+  if (last?.status === "queued" || last?.status === "running")
+    return { tone: "wait", text: "Assembling: LeanGround is checking the whole proof as one Lean file.", view: "review" };
+  if (last?.status === "certified" && !writtenBack(board, last))
+    return owner
+      ? { tone: "todo", text: "The assembled proof is certified. Preview what it changes in the document, then accept it to write it back.", view: "review" }
+      : { tone: "wait", text: "The assembled proof is certified and waits for the owner to write it back into the document.", view: "review" };
+  if (last?.status === "certified")
+    return { tone: "done", text: "Proved. LeanGround certified the whole proof as one Lean file, and it is written into the document." };
+  if (last?.status === "failed")
+    return { tone: "todo", text: `The last assembly failed (${last.failure ?? "no reason given"}). Read LeanGround's messages, then assemble again.`, view: "review" };
+  if (routeCloses(board, view.picks))
+    return owner
+      ? { tone: "todo", text: `Every goal on ${branch}'s route has a proof. Assemble it: LeanGround checks the whole proof as one Lean file.`, view: "review" }
+      : { tone: "wait", text: `Every goal on ${branch}'s route has a proof; the owner can assemble it.`, view: "review" };
+  const pending = Object.values(board.facts).filter((f) => f.state === "proposed" && branchesNeeding(board, f.goal).includes(branch));
+  if (pending.length)
+    return {
+      tone: owner ? "todo" : "wait",
+      text: `${plural(pending.length, "proposed decomposition waits", "proposed decompositions wait")} for ${owner ? "your" : "the owner's"} review; until then nobody can work on ${pending.length === 1 ? "its" : "their"} premises.`,
+      view: "decompositions",
+    };
+  const open = openGoals(board, view.picks);
+  const names = open.slice(0, 3).map((g) => goalName(board, g)).join(", ") + (open.length > 3 ? ", …" : "");
+  return { tone: "todo", text: `${plural(open.length, "goal still needs", "goals still need")} a proof: ${names}. Agents take open goals with mdc pull; you can also claim one on the task board.`, view: "tasks" };
 }

@@ -238,7 +238,23 @@ await test('project directory creates, forks and deletes branches and projects',
       const database = main.split('/')[0], fork = `${database}/draft`;
       const initialized = `mdce2einit${randomUUID().replaceAll('-', '')}`;
       const row = name => page.locator(`[data-project="${name}"]`);
+      // Both page headers show who is signed in.
+      await page.getByTitle(`Signed in as ${E2E_ACTOR}`).waitFor();
       await page.goto(base);
+      await page.getByTitle(`Signed in as ${E2E_ACTOR}`).waitFor();
+      // Signing out forgets the token: the sign-in page stays after a reload.
+      const visitor = await browser.newContext();
+      try {
+        const other = await visitor.newPage();
+        await other.goto(base);
+        await other.getByLabel('Access token').fill(E2E_TOKEN);
+        await other.getByRole('button', {name: 'Sign in', exact: true}).click();
+        await other.getByRole('button', {name: 'Sign out'}).click();
+        await other.getByRole('heading', {name: 'Sign in to MathDoc'}).waitFor();
+        await other.reload();
+        await other.getByRole('heading', {name: 'Sign in to MathDoc'}).waitFor();
+        assert.equal(await other.evaluate(key => localStorage.getItem(key), TOKEN_KEY), null);
+      } finally { await visitor.close(); }
       await page.getByRole('textbox', {name: 'Search projects and branches'}).fill(database);
       // Branches load on demand: every readable branch is listed with the caller's role.
       await row(main).getByText('admin', {exact: true}).waitFor();
@@ -1137,10 +1153,20 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
       await rows.filter({hasText: 'triple_eq'}).getByText('submitted').waitFor();
       await rows.filter({hasText: 'triple'}).first().waitFor();
       assert.match(await overview.innerText(), /registered/);
+      // One line says what the proof waits for: the lemma is proved, so main's route can be assembled.
+      const next = collab.getByLabel('Next step');
+      await next.filter({hasText: /Every goal on main's route has a proof\. Assemble it/}).waitFor();
 
-      // Decompositions list the conditional certificate of the root.
-      await collab.getByRole('tab', {name: 'Decompositions'}).click();
-      await collab.getByRole('region', {name: 'Decompositions'}).getByText(/⇐ triple_eq/).waitFor();
+      // Certificates list the root's conditional certificate, grouped by kind, with its origin.
+      await collab.getByRole('tab', {name: 'Certificates'}).click();
+      const listed = collab.getByRole('region', {name: 'Certificates'});
+      await listed.getByText(/^Decompositions \(\d+\)$/).waitFor();
+      await listed.getByText(/^Complete proofs \(\d+\)$/).waitFor();
+      await listed.getByText(/from the document node triple_one/).waitFor();
+      await listed.getByText(/⇐ triple_eq/).waitFor();
+      // The submitted nodes pick main's route: the root's sketch and the lemma's proof.
+      await listed.getByText("on main's route").first().waitFor();
+      assert.equal(await listed.getByText("on main's route").count(), 2);
 
       // Stage 3 (docs/mathdoc.md §2.7.3): an agent's decomposition of the root waits for review.
       const origin = new URL(url).origin;
@@ -1157,9 +1183,11 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
         }),
       });
       assert.equal(response.status, 200, await response.text());
-      const decompositions = collab.getByRole('region', {name: 'Decompositions'});
+      const decompositions = collab.getByRole('region', {name: 'Certificates'});
       const pending = decompositions.getByRole('region', {name: 'Pending review'});
       await pending.getByText('the root read backwards').waitFor({timeout: 120000});
+      // The tab counts what waits for the owner.
+      assert.equal(await collab.getByRole('tab', {name: /^Certificates/}).locator('.badge').innerText(), '1');
       assert.match(await pending.innerText(), /triple_one_alt : 3 = triple 1/);
       assert.match(await pending.innerText(), /Submitted by e2e .* needed by branch main/s);
       await page.screenshot({path: resolve(tmpdir(), `mdc-review-pending-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
@@ -1169,7 +1197,7 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
       const subgoal = tasks.getByRole('row').filter({hasText: 'triple_one_alt'});
       await subgoal.getByText('inactive').waitFor();
       assert.equal(await subgoal.getByRole('button', {name: 'Claim'}).isDisabled(), true);
-      await collab.getByRole('tab', {name: 'Decompositions'}).click();
+      await collab.getByRole('tab', {name: 'Certificates'}).click();
       await pending.getByPlaceholder('Review comment (optional)').fill('fine as an alternative');
       await pending.getByRole('button', {name: 'Activate'}).click();
       await pending.waitFor({state: 'detached'});
@@ -1189,17 +1217,28 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
       const budget = tasks.getByRole('table', {name: 'Budget by participant'});
       await budget.getByRole('row').filter({hasText: 'e2e'}).getByText('100').waitFor();
 
-      // Review: assemble a route, then write the certified result back in one batch.
-      await collab.getByRole('tab', {name: 'Review'}).click();
-      const review = collab.getByRole('region', {name: 'Review'});
+      // Assemble a route, then write the certified result back in one batch.
+      await collab.getByRole('tab', {name: 'Assemble & write back'}).click();
+      const review = collab.getByRole('region', {name: 'Assemble and write back'});
       await review.getByRole('button', {name: 'Assemble a route'}).click();
       await review.getByRole('button', {name: 'Accept and write back'}).waitFor({timeout: 120000});
+      await next.filter({hasText: /The assembled proof is certified\. Preview what it changes/}).waitFor();
+      // The preview shows what accepting writes, line by line, and the assembled proof.
+      await review.getByRole('button', {name: 'Preview changes'}).first().click();
+      const preview = review.getByRole('region', {name: /^Preview of assembly/});
+      await preview.getByText(/Accepting writes \d+ changes? into branch main, in one commit/).waitFor({timeout: 60000});
+      await preview.getByText(/Update the Lean block of/).first().waitFor();
+      assert.ok(await preview.locator('.diff .line').count() > 0);
+      await preview.getByText(/The assembled proof, checked by LeanGround/).click();
+      assert.match(await preview.locator('pre.messages').innerText(), /triple_one/);
       await review.getByRole('button', {name: 'Accept and write back'}).click();
-      await review.getByText(/Writeback .* · committed/).waitFor({timeout: 60000});
+      // A run already written back offers no second accept.
+      await review.getByText(/Written back to branch main \(writeback [^)]*\): .*updated the Lean block of triple_one/).waitFor({timeout: 60000});
+      assert.equal(await review.getByRole('button', {name: 'Accept and write back'}).count(), 0);
+      await next.filter({hasText: /Proved\. LeanGround certified the whole proof/}).waitFor();
+      // The committed writeback reloads the open node; no manual refresh.
+      await current.getByLabel('Lean: Certified').waitFor({timeout: 30000});
       await collab.getByRole('button', {name: 'Close'}).click();
-
-      await page.getByRole('button', {name: 'Refresh database view'}).click();
-      await current.getByLabel('Lean: Certified').waitFor();
       const saved = await api(`${url}/api/node/${root.fnode}/view`);
       assert.ok(saved.node.blocks[0].metadata.certification_id, 'the certification is written to the block metadata');
     }, [def, lemma, root]);
