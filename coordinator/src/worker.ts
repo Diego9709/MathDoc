@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Store, Job } from "./store.js";
-import { LeanGround, RemoteError } from "./remote.js";
+import { clip, LeanGround, RemoteError } from "./remote.js";
 import { Documents } from "./documents.js";
 import {
   Board,
@@ -24,6 +24,7 @@ import { baseRefSchema } from "./contracts.js";
 import { proposition, scan } from "./lean-source.js";
 import { DocError } from "./docs/names.js";
 import type { Snapshot } from "./docs/graph.js";
+import { batchInputs } from "./writeback-plan.js";
 import {
   conclusionProposition,
   convert,
@@ -43,8 +44,6 @@ import {
   committed,
   Conflict,
   nodeCallerRef,
-  type CertificateRecord,
-  type DefinitionRecord,
   type Writeback,
 } from "./writeback.js";
 const eventsSchema = z.object({
@@ -124,7 +123,7 @@ export class Worker {
           reason: taken ? "definition_name_taken" : e.code,
           details: taken
             ? "a definition with this name and different content is already registered; rename it on a review branch"
-            : `LeanGround rejected the node: ${e.code}`,
+            : (e.details ?? `LeanGround rejected the node: ${e.code}`),
         });
         return undefined;
       }
@@ -457,7 +456,12 @@ export class Worker {
           : e instanceof z.ZodError
             ? "invalid_upstream_contract"
             : "worker_error";
-      await this.store.fail(j, code, e instanceof RemoteError && e.retryable);
+      await this.store.fail(
+        j,
+        code,
+        e instanceof RemoteError && e.retryable,
+        e instanceof RemoteError ? e.details : undefined,
+      );
     } finally {
       clearInterval(timer);
     }
@@ -892,6 +896,8 @@ export class Worker {
               b.runs[rid].failure = String(
                 result.failure?.reason ?? "verification_failed",
               );
+              if (typeof result.failure?.message === "string")
+                b.runs[rid].details = clip(result.failure.message);
               b.runs[rid].retryable = result.failure?.retryable === true;
             },
             true,
@@ -952,8 +958,13 @@ export class Worker {
             j,
             (b) => {
               const branch = attached(b, name);
-              branch.writebacks = { ...branch.writebacks, [w.batch_id]: w };
+              const { bindings, ...kept } = w;
+              branch.writebacks = { ...branch.writebacks, [w.batch_id]: kept };
               if (w.status !== "committed") return;
+              // Nodes the batch created are converted as written (their goals are on the board).
+              for (const n of bindings ?? [])
+                if (!Object.hasOwn(branch.nodes, n.node))
+                  branch.nodes[n.node] = n;
               branch.accepted = {
                 certification_id: run.certification_id!,
                 revision: w.version!,
@@ -994,29 +1005,12 @@ export class Worker {
           });
           return;
         }
-        const certificates = new Map<string, CertificateRecord>();
-        for (const step of run.route.steps) {
-          const cert = await this.shared(b, step.certificate_id, true);
-          certificates.set(step.certificate_id, cert as CertificateRecord);
-        }
-        const definitions = new Map<string, DefinitionRecord>();
-        const known = new Set(
-          Object.values(branch.nodes).flatMap((n) => n.definition_ids ?? []),
+        const { certificates, definitions } = await batchInputs(
+          this.lean,
+          b,
+          run,
+          branch.nodes,
         );
-        const pending = [...certificates.values()].flatMap(
-          (c) => c.definitions ?? [],
-        );
-        while (pending.length) {
-          const id = pending.pop()!;
-          if (known.has(id) || definitions.has(id)) continue;
-          const d = await this.lean.fact("read", {
-            kind: "definition",
-            id,
-            source: true,
-          });
-          definitions.set(id, d as DefinitionRecord);
-          pending.push(...((d.deps as string[] | undefined) ?? []));
-        }
         let built;
         try {
           built = buildBatch({

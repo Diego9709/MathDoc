@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS mdc_event(sequence bigserial PRIMARY KEY, project tex
 CREATE TABLE IF NOT EXISTS mdc_job(id text PRIMARY KEY, project text NOT NULL REFERENCES mdc_project(id), actor text NOT NULL, kind text NOT NULL, payload jsonb NOT NULL, status text NOT NULL DEFAULT 'queued', epoch integer NOT NULL DEFAULT 0, tries integer NOT NULL DEFAULT 0, expires timestamptz, available_at timestamptz NOT NULL DEFAULT now(), error text, created_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS mdc_job_queue ON mdc_job(status,available_at);
 ALTER TABLE mdc_job ADD COLUMN IF NOT EXISTS result jsonb;
+ALTER TABLE mdc_job ADD COLUMN IF NOT EXISTS details text;
 CREATE UNIQUE INDEX IF NOT EXISTS mdc_project_scope ON mdc_project((body->'project'->>'database'),(body->'project'->>'environment_id'));
 ALTER TABLE mdc_project ADD COLUMN IF NOT EXISTS meta jsonb;
 CREATE TABLE IF NOT EXISTS mdc_task(project text NOT NULL REFERENCES mdc_project(id), id text NOT NULL, body jsonb NOT NULL, PRIMARY KEY(project,id));
@@ -105,10 +106,25 @@ function documentOf(b: Board) {
   const { tasks: _t, attempts: _a, spent: _s, ...body } = b;
   return body;
 }
+/**
+ * JSON with object keys sorted. PostgreSQL's jsonb reorders keys, so a value read back and the
+ * same value received again (a certificate's goal identity, every sync) differ in key order only.
+ */
+function canonical(value: unknown) {
+  return JSON.stringify(value, (_k, v) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map((k) => [k, v[k]]),
+        )
+      : v,
+  );
+}
 /** Everything a client can act on: the board without sync bookkeeping. */
 function observable(b: Board) {
   const { last_sync: _, ...rest } = b;
-  return JSON.stringify(rest);
+  return canonical(rest);
 }
 interface Loaded {
   board: Board;
@@ -178,7 +194,7 @@ export class Store {
       await db.query("SELECT id, body FROM mdc_task WHERE project=$1", [b.id])
     ).rows) {
       b.tasks[r.id] = r.body;
-      seen.set(`t:${r.id}`, JSON.stringify(r.body));
+      seen.set(`t:${r.id}`, canonical(r.body));
     }
     for (const r of (
       await db.query("SELECT id, body FROM mdc_attempt WHERE project=$1", [
@@ -187,7 +203,7 @@ export class Store {
     ).rows) {
       const a: Attempt = r.body;
       b.attempts[r.id] = a;
-      seen.set(`a:${r.id}`, JSON.stringify(a));
+      seen.set(`a:${r.id}`, canonical(a));
       // Spent is the sum of closed attempts (finished, expired or revoked).
       if (a.outcome) b.spent += a.spent;
     }
@@ -639,9 +655,7 @@ export class Store {
       metaOf(b),
     ]);
     const changed = <T extends { id: string }>(prefix: string, xs: T[]) =>
-      xs.filter(
-        (x) => loaded.seen.get(`${prefix}${x.id}`) !== JSON.stringify(x),
-      );
+      xs.filter((x) => loaded.seen.get(`${prefix}${x.id}`) !== canonical(x));
     await this.putRows(
       c,
       b.id,
@@ -711,12 +725,13 @@ export class Store {
       else await this.save(c, loaded, j.actor, `job:${j.kind}`);
       if (done)
         await c.query(
-          "UPDATE mdc_job SET status='done',expires=NULL,error=NULL,result=$2 WHERE id=$1",
+          "UPDATE mdc_job SET status='done',expires=NULL,error=NULL,details=NULL,result=$2 WHERE id=$1",
           [j.id, result ?? null],
         );
     });
   }
-  async fail(j: Job, error: string, retry: boolean) {
+  /** `details` explains `error`, e.g. the Lean messages of a proof LeanGround rejected. */
+  async fail(j: Job, error: string, retry: boolean, details?: string) {
     await this.transaction(async (c) => {
       const valid = (
         await c.query(
@@ -727,13 +742,14 @@ export class Store {
       if (!valid) return;
       const willRetry = retry && j.tries < JOB_TRIES;
       await c.query(
-        "UPDATE mdc_job SET status=$3,error=$4,expires=NULL,available_at=now()+make_interval(secs=>$5) WHERE id=$1 AND epoch=$2",
+        "UPDATE mdc_job SET status=$3,error=$4,details=$6,expires=NULL,available_at=now()+make_interval(secs=>$5) WHERE id=$1 AND epoch=$2",
         [
           j.id,
           j.epoch,
           willRetry ? "queued" : "failed",
           error,
           retryDelay(j.tries),
+          details ?? null,
         ],
       );
       const loaded = (await this.load(c, j.project, true))!;
@@ -747,6 +763,8 @@ export class Store {
         if (r) {
           r.status = "failed";
           r.failure = error;
+          if (details) r.details = details;
+          else delete r.details;
           r.retryable = retry;
         }
       }
@@ -765,7 +783,7 @@ export class Store {
     await this.meta(id, actor);
     return (
       await this.pool.query(
-        "SELECT id,actor,kind,status,tries,error,result,created_at FROM mdc_job WHERE project=$1 ORDER BY created_at DESC LIMIT 100",
+        "SELECT id,actor,kind,status,tries,error,details,result,created_at FROM mdc_job WHERE project=$1 ORDER BY created_at DESC LIMIT 100",
         [id],
       )
     ).rows;
@@ -774,7 +792,7 @@ export class Store {
     await this.meta(id, actor);
     const row = (
       await this.pool.query(
-        "SELECT id,actor,kind,status,tries,error,result,created_at FROM mdc_job WHERE project=$1 AND id=$2",
+        "SELECT id,actor,kind,status,tries,error,details,result,created_at FROM mdc_job WHERE project=$1 AND id=$2",
         [id, job],
       )
     ).rows[0];

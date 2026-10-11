@@ -149,6 +149,52 @@ test(
 );
 
 test(
+  "a job that writes back equal values in another key order keeps the revision",
+  { skip: !dsn },
+  async () => {
+    // jsonb stores object keys in its own order; a sync receives the same goal identity from
+    // LeanGround in another one. Neither is a change a client could act on (§2.7.7).
+    const schema = await isolated();
+    const store = new Store(schema.url);
+    await store.migrate();
+    try {
+      const b = board(`p-${randomUUID().slice(0, 8)}`);
+      await store.create(b);
+      await store.pool.query("DELETE FROM mdc_job WHERE project=$1", [b.id]);
+      const job = async () => {
+        await store.apply(b.id, "alice", null, randomUUID(), { type: "sync" });
+        return (await store.claim())!;
+      };
+      const revision = async () => (await store.get(b.id, "alice")).revision;
+      const before = await revision();
+      await store.checkpoint(
+        await job(),
+        (x) => {
+          const g = x.goals[x.root];
+          g.identity = Object.fromEntries(
+            Object.entries(g.identity!).reverse(),
+          ) as typeof g.identity;
+          x.last_sync = Date.now();
+        },
+        true,
+      );
+      assert.equal(await revision(), before, "same values, other key order");
+      await store.checkpoint(
+        await job(),
+        (x) => {
+          x.goals[x.root].statement = "changed";
+        },
+        true,
+      );
+      assert.equal(await revision(), before + 1, "a real change still counts");
+    } finally {
+      await store.pool.end();
+      await schema.close();
+    }
+  },
+);
+
+test(
   "migrate moves tasks and attempts of boards written before into their rows",
   { skip: !dsn },
   async () => {

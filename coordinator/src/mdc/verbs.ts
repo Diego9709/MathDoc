@@ -9,6 +9,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { GoalDraft } from "../goal-draft.js";
+import { goalName } from "../goal-view.js";
 import { Client, MdcError } from "./client.js";
 import { parse, render, sha256 } from "./goal-file.js";
 import * as ws from "./workspace.js";
@@ -96,8 +97,8 @@ export async function liveBoard(c: Client, database: string, branch: string) {
 }
 
 /**
- * A goal reference: a full GoalKey, a unique prefix of at least 8 hex digits, or the title or
- * UUID of a converted node on the branch.
+ * A goal reference: a full GoalKey, a unique prefix of at least 8 hex digits, the title or
+ * UUID of a converted node on the branch, or else the goal's name as `mdc goals` shows it.
  */
 export async function goalOf(
   c: Client,
@@ -122,12 +123,22 @@ export async function goalOf(
       `/p/${database}/${branch}/api/resolve?ref=${encodeURIComponent(ref)}`,
     ));
   } catch (e) {
-    if (e instanceof MdcError && e.status === 404)
+    if (!(e instanceof MdcError && e.status === 404)) throw e;
+    // A goal without a node on this branch, by the name `mdc goals` shows.
+    const named = Object.keys(board.goals).filter(
+      (k) =>
+        goalName(board, k) === ref || board.goals[k].declaration?.name === ref,
+    );
+    if (named.length === 1) return named[0];
+    if (named.length > 1)
       throw new MdcError(
-        "unknown_goal",
-        `${ref} is neither a goal of the project nor a node of ${branch}`,
+        "ambiguous_goal",
+        `${named.length} goals are named ${ref}; give a GoalKey prefix`,
       );
-    throw e;
+    throw new MdcError(
+      "unknown_goal",
+      `${ref} is neither a goal of the project nor a node of ${branch}`,
+    );
   }
   const node = board.branches?.[branch]?.nodes?.[fnode];
   if (!node?.goal)
@@ -316,6 +327,7 @@ async function follow(
     } else if (job.status === "failed") {
       s.status = "rejected";
       s.reason = job.error ?? "job_failed";
+      if (job.details) s.messages = job.details;
     } else if (!wait) break;
     else if (ctx.now() >= until)
       throw new MdcError(
@@ -477,6 +489,7 @@ export async function submit(
     ...(s.state ? { certificate_state: s.state } : {}),
     ...(s.premises ? { premise_goals: s.premises } : {}),
     ...(s.reason ? { reason: s.reason } : {}),
+    ...(s.messages ? { messages: s.messages } : {}),
     ...leases,
   };
 }
@@ -584,7 +597,13 @@ export async function waitJob(ctx: VerbContext, project: string, job: string) {
     );
     if (j.status === "done") return j.result;
     if (j.status === "failed")
-      throw new MdcError(j.error ?? "job_failed", `job ${job} failed`);
+      throw new MdcError(
+        j.error ?? "job_failed",
+        `job ${job} failed`,
+        undefined,
+        false,
+        j.details ?? undefined,
+      );
     if (ctx.now() >= until)
       throw new MdcError("wait_timeout", `job ${job} is still ${j.status}`);
     await ctx.sleep(1000);
@@ -614,6 +633,62 @@ export async function refute(ctx: VerbContext, ref: string | undefined) {
       (await waitJob(ctx, board.id, String(res.job))).negation;
   }
   return { refutes: goal, ...(await pull(ctx, negation)) };
+}
+
+/**
+ * A draft check (§2.7.8): LeanGround checks the file on the project's base and answers with
+ * Lean's diagnostics. Nothing is recorded and no certificate is made, so it is no submission.
+ * A pulled file is checked in its own project and renews its workspace's leases; any other
+ * file in the project of MDC_PROJECT (or -p).
+ */
+export async function check(ctx: VerbContext, file: string | undefined) {
+  if (!file) throw new MdcError("usage", "mdc check FILE");
+  const source = await readFile(resolve(ctx.cwd, file), "utf8");
+  let project: string;
+  let leases: { renewed: string[]; lost: string[] } | undefined;
+  try {
+    const { w, record } = await pulled(ctx, file);
+    project = record.project;
+    leases = await renew(ctx, w);
+  } catch (e) {
+    if (!(e instanceof MdcError && e.reason === "not_pulled")) throw e;
+    const { database, home } = scope(ctx, "check");
+    project = (await liveBoard(ctx.client, database, home)).id;
+  }
+  const out = await ctx.client.request("POST", projectPath(project, "/check"), {
+    source,
+  });
+  // Lean's messages as plain lines, which the command line also prints as they are.
+  const messages = (
+    out.diagnostics as {
+      severity: string;
+      line?: number | null;
+      col?: number | null;
+      text: string;
+    }[]
+  )
+    .map(
+      (d) =>
+        `${file}:${d.line ?? "?"}:${d.col ?? "?"}: ${d.severity}: ${d.text}`,
+    )
+    .join("\n");
+  return { file, ...out, ...(messages ? { messages } : {}), ...leases };
+}
+
+/** Declarations of the project's base whose names contain one of the queries (§2.7.8). */
+export async function lemma(ctx: VerbContext, queries: string[]) {
+  if (!queries.length)
+    throw new MdcError(
+      "usage",
+      "mdc lemma QUERY... [--kind theorem|definition|all] [-n N]",
+    );
+  const { database, home } = scope(ctx, "lemma");
+  const board = await liveBoard(ctx.client, database, home);
+  const params = new URLSearchParams();
+  for (const q of queries) params.append("q", q);
+  if (ctx.flag("--kind")) params.set("kind", ctx.flag("--kind")!);
+  params.set("limit", String(number(ctx, "--max", 20)));
+  return ctx.client.request("GET", projectPath(board.id, `/search?${params}`));
 }
 
 /** The goals most worth working on (§2.7.5); with --claim, pull the first one. */

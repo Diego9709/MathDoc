@@ -39,6 +39,8 @@ export interface Submission {
   /** The certificate's state on the board: `proposed` awaits the owner's review. */
   state?: string;
   reason?: string;
+  /** For `rejected`: LeanGround's explanation, e.g. Lean's errors. */
+  messages?: string;
   premises?: unknown[];
 }
 export interface FileRecord {

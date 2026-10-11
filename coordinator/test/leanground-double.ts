@@ -1,7 +1,9 @@
 // A deterministic contract double of LeanGround's fact API (docs/12 of LeanGround) for
 // tests without a Lean kernel. It checks shapes, not proofs: a GoalKey is a hash of the
 // statement text and the environment, premises are the source's `sorry` theorems, and an
-// assembly always certifies. Results are only as faithful as these rules.
+// assembly always certifies. A source with a `-- wrong:` comment stands for a proof Lean refuses:
+// it is rejected with a Lean-like message, and a draft check reports it on that line. Retrieval
+// searches a small fixed library by name. Results are only as faithful as these rules.
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
@@ -27,6 +29,13 @@ export const BASE = {
 
 type Body = Record<string, any>;
 
+/** The declarations retrieval knows. */
+const LIBRARY = [
+  { name: "Nat.add_comm", type: "∀ (n m : ℕ), n + m = m + n" },
+  { name: "Nat.mul_comm", type: "∀ (n m : ℕ), n * m = m * n" },
+  { name: "Nat.two_mul", type: "∀ (n : ℕ), 2 * n = n + n" },
+];
+
 export async function leangroundDouble(port = 0) {
   const certificates = new Map<string, Body>();
   const definitions = new Map<string, Body>();
@@ -50,6 +59,55 @@ export async function leangroundDouble(port = 0) {
     calls.push(path);
     if (path === "/v1/bases/1")
       return { status: 200, body: { base: { ...BASE, fingerprint: "base" } } };
+    if (path === "/v1/check") {
+      const wrong = String(body.source)
+        .split("\n")
+        .findIndex((l) => l.includes("-- wrong:"));
+      return {
+        status: 200,
+        body: {
+          ok: wrong < 0,
+          verdict: true,
+          stage: wrong < 0 ? null : "decl",
+          base: body.bases?.[0] ?? "Init",
+          diagnostics:
+            wrong < 0
+              ? []
+              : [
+                  {
+                    severity: "error",
+                    line: wrong + 1,
+                    col: 2,
+                    text: "Tactic `rfl` failed: the left-hand side is not definitionally equal to the right-hand side",
+                  },
+                ],
+          axioms: {},
+          trust: null,
+          missing_imports: [],
+          ms: 1,
+        },
+      };
+    }
+    if (path === "/v1/retrieval") {
+      // LeanGround's BaseRef parser is strict: a derived fingerprint is refused.
+      if (!body.base?.base_key || "fingerprint" in body.base)
+        return fail("wire_error");
+      const hits = (body.queries as string[]).flatMap((q) =>
+        LIBRARY.filter((d) => d.name.includes(q)).map((d) => ({
+          declaration_id: d.name,
+          base_id: BASE.base_id,
+          stored_base_key: 1,
+          node_id: LIBRARY.indexOf(d),
+          name: d.name,
+          kind: "theorem",
+          type: d.type,
+          trust: 3,
+          axioms: [],
+          evidence: { request_id: body.request_id, matched_query: q },
+        })),
+      );
+      return { status: 200, body: { hits: hits.slice(0, body.limit) } };
+    }
     const op = path.replace("/v1/facts/", "");
     switch (op) {
       case "project":
@@ -95,6 +153,16 @@ export async function leangroundDouble(port = 0) {
         const goal = identity(proposition(root), r);
         if (r.goal && r.goal.key !== goal.key)
           return fail("proposition_differs");
+        if (r.source.includes("-- wrong:"))
+          return {
+            status: 400,
+            body: {
+              kind: "fact_error",
+              reason: "verification_failed",
+              error:
+                "<input>:3:2: error: Tactic `rfl` failed: the left-hand side is not definitionally equal to the right-hand side",
+            },
+          };
         const premises = placeholders.map((d) => ({
           name: d.name,
           goal: identity(proposition(d), r),

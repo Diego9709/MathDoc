@@ -301,7 +301,15 @@ async function flow(leanground: { url: string; token: string }) {
       const tools = (await mcp.rpc("tools/list")).result.tools.map(
         (t: { name: string }) => t.name,
       );
-      assert.deepEqual(tools, ["pull", "prove", "split", "done", "note"]);
+      assert.deepEqual(tools, [
+        "pull",
+        "prove",
+        "split",
+        "check",
+        "lemma",
+        "done",
+        "note",
+      ]);
       const got = await mcp.tool("pull", { goal: goalOf("plus_zero") });
       assert.equal(got.lease.actor, "bob/mcp");
       assert.match(got.text, /-- mdc: edit below this line\n/);

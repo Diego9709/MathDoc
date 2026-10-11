@@ -1,24 +1,29 @@
 // Project stage 6 (docs/mathdoc.md §2.7.7): LeanGround calls that run Lean may take as long as
 // LeanGround allows, timeouts and refusals are retried with backoff, a job interrupted by a
 // LeanGround outage completes once it is back, and TerminusDB's rolled-back conflicts are resent.
+// The API server exits on SIGTERM even after it started a LaTeX renderer. A proof LeanGround
+// rejects reports Lean's messages.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { LeanGround, RemoteError } from "../src/remote.js";
 import { Terminus } from "../src/docs/terminus.js";
 import { JOB_TRIES, Store, retryDelay } from "../src/store.js";
 import { main } from "../src/cli.js";
 import { board } from "./fixtures.js";
-import { actors, client, deploy, env, isolated } from "./harness.js";
+import { actors, client, deploy, env, isolated, ready } from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 
 const documents = Boolean(env.dsn && env.terminus && env.terminusPassword);
+const coordinator = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("LeanGround calls that run Lean wait longer than reads; failures are retryable", async () => {
   // Every response takes 400 ms.
@@ -240,5 +245,229 @@ test(
       await dep.close();
       await schema.close();
     }
+  },
+);
+
+test(
+  "the API server exits on SIGTERM after starting a LaTeX renderer",
+  { skip: !documents, timeout: 120000 },
+  async () => {
+    const schema = await isolated();
+    const store = new Store(schema.url);
+    await store.migrate();
+    await store.pool.end();
+    // A stand-in for the plasTeX worker: it answers every line and, like renderer.py, runs
+    // until its input ends.
+    const dir = await mkdtemp(join(tmpdir(), "mdc-stop-"));
+    const fake = join(dir, "python");
+    await writeFile(
+      fake,
+      `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));
+require("node:readline")
+  .createInterface({ input: process.stdin })
+  .on("line", () => console.log(JSON.stringify({ result: { macros: [] } })));
+`,
+    );
+    await chmod(fake, 0o755);
+    const free = createServer().listen(0, "127.0.0.1");
+    await once(free, "listening");
+    const port = (free.address() as { port: number }).port;
+    await new Promise((r) => free.close(r));
+    const db = `stop${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "src/main.ts", "serve"],
+      {
+        cwd: coordinator,
+        env: {
+          ...process.env,
+          MDC_DATABASE_URL: schema.url,
+          MDC_PORT: String(port),
+          MDC_ACTORS: JSON.stringify(actors),
+          MDC_TERMINUS_URL: env.terminus,
+          MDC_TERMINUS_PASSWORD: env.terminusPassword,
+          MDC_LATEX_PYTHON: fake,
+          MDC_WEB_DIR: "/nonexistent",
+          LEANGROUND_SERVER_URL: "http://127.0.0.1:9",
+          LEANGROUND_FACT_TOKEN: "unused",
+          LEANGROUND_ACTOR: "coordinator",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    const exited = new Promise<number | null>((r) =>
+      child.once("exit", (code) => r(code)),
+    );
+    let output = "";
+    child.stdout.on("data", (c) => (output += c));
+    child.stderr.on("data", (c) => (output += c));
+    const terminus = new Terminus({
+      url: env.terminus!,
+      user: "admin",
+      password: env.terminusPassword!,
+    });
+    try {
+      for (let i = 0; !output.includes("MathDoc http://"); i++) {
+        assert.ok(i < 300 && child.exitCode === null, output);
+        await delay(100);
+      }
+      const base = `http://127.0.0.1:${port}`;
+      const call = (method: string, path: string, body?: unknown) =>
+        fetch(`${base}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${actors.alice.token}`,
+            "content-type": "application/json",
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+      assert.equal(
+        (await call("POST", "/api/projects", { action: "init", name: db }))
+          .status,
+        200,
+      );
+      const catalog = await call(
+        "GET",
+        `/p/${db}/main/api/project/latex/catalog`,
+      );
+      assert.equal(catalog.status, 200, await catalog.clone().text());
+      assert.deepEqual((await catalog.json()).macros, []);
+      const renderer = Number(await readFile(join(dir, "pid"), "utf8"));
+
+      child.kill("SIGTERM");
+      const code = await Promise.race([exited, delay(10000, "running")]);
+      assert.notEqual(
+        code,
+        "running",
+        "the server is still running 10 s after SIGTERM",
+      );
+      const alive = () => {
+        try {
+          process.kill(renderer, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; alive(); i++) {
+        assert.ok(i < 20, "the LaTeX renderer outlived the server");
+        await delay(100);
+      }
+    } finally {
+      child.kill("SIGKILL");
+      await terminus
+        .database(db, "main")
+        .deleteDatabase()
+        .catch(() => {});
+      await schema.close();
+    }
+  },
+);
+
+async function rejected(leanground: { url: string; token: string }) {
+  const schema = await isolated();
+  const dep = await deploy(schema.url, leanground);
+  const db = `rej${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const http = client(() => dep, db);
+  const dir = await mkdtemp(join(tmpdir(), "mdc-rejected-"));
+  const mdc = (...argv: string[]) =>
+    main(
+      argv,
+      {
+        MDC_URL: dep.base,
+        MDC_TOKEN: actors.alice.token,
+        MDC_PROJECT: `${db}/main`,
+      },
+      async () => "",
+      { cwd: dir, sleep: () => dep.drain() },
+    ) as Promise<any>;
+  try {
+    await http.ok("alice", "POST", "/api/projects", {
+      action: "init",
+      name: db,
+    });
+    const root = await http.node(
+      "two",
+      "theorem two_mul_eq (n : Nat) : n + n = 2 * n := sorry\n",
+    );
+    await http.ok("alice", "PUT", `/api/coordination/environments/${db}`, {
+      base_key: 1,
+    });
+    const id = (
+      await http.ok(
+        "alice",
+        "POST",
+        "/api/coordination/projects",
+        { document: { database: db, branch: "main", node: root }, budget: 10 },
+        { "idempotency-key": "c" },
+      )
+    ).id as string;
+    await dep.drain();
+    const pulled = await mdc("pull", "two");
+    const file = join(dir, pulled.file);
+    const prove = async (proof: string) => {
+      await writeFile(
+        file,
+        (await readFile(file, "utf8")).replace(
+          /:= by\n[\s\S]*$/,
+          `:= by\n  ${proof}\n`,
+        ),
+      );
+      return mdc("prove", pulled.file, "--wait");
+    };
+
+    // n + n and 2 * n do not reduce to the same term: Lean refuses rfl and says why.
+    const refused = await prove(
+      "rfl -- wrong: the two sides do not reduce to the same term",
+    );
+    assert.deepEqual(
+      [refused.status, refused.reason],
+      ["rejected", "verification_failed"],
+      JSON.stringify(refused),
+    );
+    assert.match(refused.messages, /rfl/);
+    const failed = (
+      await http.ok("alice", "GET", `/api/coordination/projects/${id}/jobs`)
+    ).find((j: { kind: string; status: string }) => j.status === "failed");
+    assert.deepEqual(
+      [failed.kind, failed.error, failed.details],
+      ["submit", "verification_failed", refused.messages],
+    );
+
+    const proved = await prove("omega");
+    assert.equal(proved.status, "certified", JSON.stringify(proved));
+  } finally {
+    await new Terminus({
+      url: env.terminus!,
+      user: "admin",
+      password: env.terminusPassword!,
+    })
+      .database(db, "main")
+      .deleteDatabase()
+      .catch(() => {});
+    await dep.close();
+    await schema.close();
+  }
+}
+
+test(
+  "a proof LeanGround rejects reports Lean's messages (LeanGround double)",
+  { skip: !documents, timeout: 120000 },
+  async () => {
+    const lean = await leangroundDouble();
+    try {
+      await rejected({ url: lean.url, token: "double" });
+    } finally {
+      await lean.close();
+    }
+  },
+);
+
+test(
+  "a proof LeanGround rejects reports Lean's messages (real LeanGround)",
+  { skip: !ready, timeout: 900000 },
+  async () => {
+    await rejected({ url: env.lean!, token: env.leanToken! });
   },
 );

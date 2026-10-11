@@ -27,6 +27,11 @@ export interface Writeback {
   contract?: z.infer<typeof writebackContractSchema>;
   created: string[];
   updated: string[];
+  /**
+   * The bindings of the nodes the batch creates, so that the branch shows them as converted once
+   * the batch is committed; not kept with the writeback record.
+   */
+  bindings?: NodeBinding[];
 }
 export interface CertificateRecord {
   id: string;
@@ -107,6 +112,7 @@ export function buildBatch(input: {
 
   const changes = new Map<string, Node>();
   const created: string[] = [];
+  const bindingsOfCreated: NodeBinding[] = [];
   const operations: z.infer<typeof writebackContractSchema>["operations"] = [];
   const root = moduleRoot(s.project);
   const newNode = (key: string, title: string): Node => {
@@ -147,6 +153,15 @@ export function buildBatch(input: {
     n.depens = (d.deps ?? []).map(definitionNode);
     changes.set(n.fnode, n);
     created.push(n.fnode);
+    bindingsOfCreated.push({
+      node: n.fnode,
+      title: n.title,
+      role: "definition",
+      lean_content_sha256: digestText(leanBlock(n)!.content),
+      definition_ids: [id],
+      definition_nodes: n.depens,
+      state: "registered",
+    });
     operations.push({
       operation_id: `${batch}:${n.fnode}`,
       kind: "create_definition_node",
@@ -221,7 +236,8 @@ export function buildBatch(input: {
       const p = provider.get(premise);
       if (p && p !== n.fnode) depens.add(p);
     }
-    for (const id of cert.definitions ?? []) depens.add(definitionNode(id));
+    const usedDefinitions = (cert.definitions ?? []).map(definitionNode);
+    for (const d of usedDefinitions) depens.add(d);
     n.depens = [...depens];
     const certification =
       n.fnode === request.node ? run.certification_id! : cert.id;
@@ -231,6 +247,21 @@ export function buildBatch(input: {
       coordination_operation: batch,
     });
     changes.set(n.fnode, n);
+    if (isNew)
+      bindingsOfCreated.push({
+        node: n.fnode,
+        title: n.title,
+        role: "theorem",
+        lean_content_sha256: digestText(content),
+        conclusion: n.title,
+        goal: cert.goal,
+        premises: cert.premises
+          .map((p) => provider.get(p))
+          .filter((p): p is string => p !== undefined && p !== n.fnode),
+        definition_nodes: usedDefinitions,
+        state: "certified",
+        certificate: cert.id,
+      });
     operations.push({
       operation_id: `${batch}:${n.fnode}`,
       kind: isNew ? "create_goal_node" : "update_lean_block",
@@ -269,6 +300,7 @@ export function buildBatch(input: {
       contract,
       created,
       updated: [...changes.keys()].filter((id) => !created.includes(id)),
+      bindings: bindingsOfCreated,
     },
   };
 }

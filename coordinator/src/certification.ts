@@ -10,7 +10,14 @@ export type LeanCertification =
   | null
   | { status: "not_submitted" }
   | {
-      status: "insufficient" | "derivable" | "certified" | "stale" | "rejected";
+      /** `registered`: a definition node whose definitions LeanGround registered (it has no goal). */
+      status:
+        | "insufficient"
+        | "derivable"
+        | "certified"
+        | "stale"
+        | "rejected"
+        | "registered";
       project: string;
       /** The branch whose conversion of this node is shown. */
       branch?: string;
@@ -21,6 +28,8 @@ export type LeanCertification =
       truncated: boolean;
       reason?: string;
       details?: string;
+      /** For `registered`: the LeanGround definition IDs, in source order. */
+      definition_ids?: string[];
     };
 
 export type CertificationLookup = (node: Node) => LeanCertification;
@@ -104,6 +113,16 @@ export function certificationLookup(
         details:
           "the Lean text or a definition it uses changed after submission",
       };
+    // A definition has no goal: it is registered, refused, or still waiting for its own
+    // dependencies to be registered (§4.5).
+    if (binding.role === "definition" && binding.state !== "rejected")
+      return binding.state === "registered"
+        ? {
+            ...base,
+            status: "registered",
+            definition_ids: binding.definition_ids ?? [],
+          }
+        : { status: "not_submitted" };
     if (binding.state === "rejected" || !binding.goal)
       return {
         ...base,

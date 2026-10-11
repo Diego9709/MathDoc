@@ -20,7 +20,7 @@ import { serve as serveMcp } from "./mdc/mcp.js";
 
 const USAGE = `usage: mdc [-p DATABASE/BRANCH] <command>
 
-server:     status | init DATABASE | remove DATABASE
+server:     status (you, your default branch, the server) | init DATABASE | remove DATABASE
             grant ACTOR owner|editor|viewer|none
 branch:     branch new NAME [--attach] [--pick GOAL=CERT]... | branch del | history | export | import FILE
             project latex show | project latex set --preamble FILE --bib FILE
@@ -38,15 +38,17 @@ goals:      goals [--status S] [--branch B] | goal GOAL   (the project's goals; 
 work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]
             prove FILE [--wait] [--dry-run] [--again]
             split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]
+            check FILE                 (LeanGround checks it now: Lean's messages; no submission)
             done [FILE] [--spent N] [--outcome O] [--note TEXT]
             note FILE|GOAL -m TEXT     (what was tried, where it got stuck)
             refute GOAL [pull flags]   (pull the goal's negation; proving it marks GOAL false)
             next [--branch B] [-n N] [--claim]   (the goals most worth working on; --claim pulls the first)
+            lemma QUERY... [--kind theorem|definition|all] [-n N]   (library declarations by name, in the project's base)
             mcp [--dir DIR]            (the work commands as MCP tools over stdio)
 tokens:     token new NAME [--scope work,maintain,edit] [--expires 30d|12h|ISO-DATE]
             token list | token revoke NAME   (delegated tokens act as YOU/NAME)
-            (GOAL: a GoalKey, a unique prefix of 8+ hex digits, or a node title or UUID;
-             CERT: a certificate ID or a unique prefix of 8+ hex digits)
+            (GOAL: a GoalKey, a unique prefix of 8+ hex digits, a node title or UUID, or the
+             name \`mdc goals\` shows; CERT: a certificate ID or a unique prefix of 8+ hex digits)
 Board commands sent by review, pick, branch new and proof command can be rerun after a lost
 reply: they take effect once (records in MDC_STATE_DIR, default ~/.local/state/mdc).
 Write commands take --revision REV to require the revision printed by show.`;
@@ -137,10 +139,12 @@ const WORK = new Set([
   "pull",
   "prove",
   "split",
+  "check",
   "done",
   "note",
   "refute",
   "next",
+  "lemma",
   "mcp",
 ]);
 
@@ -161,7 +165,7 @@ export async function main(
     ? await findWorkspace(
         command === "mcp"
           ? resolve(cwd, flag("--dir") ?? ".")
-          : command === "pull" || !args[0]
+          : command === "pull" || command === "lemma" || !args[0]
             ? cwd
             : dirname(resolve(cwd, args[0])),
       )
@@ -241,6 +245,8 @@ export async function main(
     pull: () => verbs.pull(ctx, args[0]),
     prove: () => verbs.submit(ctx, args[0], "prove"),
     split: () => verbs.submit(ctx, args[0], "split"),
+    check: () => verbs.check(ctx, args[0]),
+    lemma: () => verbs.lemma(ctx, args),
     done: () => verbs.done(ctx, args[0]),
     note: () => verbs.note(ctx, args[0]),
     refute: () => verbs.refute(ctx, args[0]),
@@ -274,8 +280,14 @@ export async function main(
       }
       break;
     }
-    case "status":
-      return request("GET", "/api/status");
+    case "status": {
+      // Who you are and the default branch (-p or MDC_PROJECT), then the server and your branches.
+      const [server, me] = await Promise.all([
+        request("GET", "/api/status"),
+        request("GET", "/api/me"),
+      ]);
+      return { actor: me.actor, project: project ?? null, ...server };
+    }
     case "init":
       return directory({ action: "init", name: need(args[0], "DATABASE") });
     case "remove":
@@ -498,13 +510,17 @@ if (invoked)
     (out) => {
       if (out !== undefined)
         process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+      // A rejected proof: Lean's messages as they are, to read them line by line.
+      const messages = (out as { messages?: unknown } | undefined)?.messages;
+      if (typeof messages === "string") process.stderr.write(`\n${messages}\n`);
     },
     (e: unknown) => {
-      // Usage errors print the usage text; failures print {reason, status?, details?}.
+      // Usage errors print the usage text; failures print {reason, status?, details?, messages?},
+      // then LeanGround's messages as they are, to read Lean's errors line by line.
       process.stderr.write(
         e instanceof UsageError
           ? `${e.message}\n`
-          : `${JSON.stringify(e instanceof MdcError ? e : { reason: "error", details: e instanceof Error ? e.message : String(e) })}\n`,
+          : `${JSON.stringify(e instanceof MdcError ? e : { reason: "error", details: e instanceof Error ? e.message : String(e) })}\n${e instanceof MdcError && e.messages ? `\n${e.messages}\n` : ""}`,
       );
       process.exitCode = e instanceof UsageError ? 2 : 1;
     },

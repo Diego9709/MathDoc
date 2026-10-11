@@ -35,6 +35,8 @@ import {
 } from "./identity.js";
 import { DocsBackend } from "./docs/routes.js";
 import { DocError } from "./docs/names.js";
+import { Terminus } from "./docs/terminus.js";
+import { previewWriteback } from "./writeback-plan.js";
 import type { Action } from "./docs/workspace.js";
 import {
   convert,
@@ -77,6 +79,40 @@ function revision(req: IncomingMessage) {
   return h === "*" ? null : Number(h.slice(1, -1));
 }
 const bindingSchema = nodeRefSchema.pick({ database: true, branch: true });
+/** LeanGround's answers to a draft check and a retrieval, as far as MathDoc reads them. */
+const checkResultSchema = z
+  .object({
+    ok: z.boolean(),
+    stage: z.string().nullish(),
+    diagnostics: z.array(
+      z
+        .object({
+          severity: z.string(),
+          line: z.number().nullish(),
+          col: z.number().nullish(),
+          text: z.string(),
+        })
+        .passthrough(),
+    ),
+    axioms: z.record(z.array(z.string())).default({}),
+    trust: z.union([z.number(), z.string()]).nullish(),
+    missing_imports: z.array(z.string()).default([]),
+    ms: z.number().nullish(),
+  })
+  .passthrough();
+const searchResultSchema = z.object({
+  hits: z.array(
+    z
+      .object({
+        name: z.string(),
+        kind: z.string(),
+        type: z.string().nullish(),
+        trust: z.number().nullish(),
+        evidence: z.record(z.unknown()).default({}),
+      })
+      .passthrough(),
+  ),
+});
 export function server(
   cfg: Config,
   store: Store,
@@ -112,6 +148,15 @@ export function server(
         })
       : null;
   const environments = new Environments(store.pool);
+  // Writeback previews read the branch the way the writeback job does.
+  const terminus =
+    cfg.terminusUrl && cfg.terminusPassword
+      ? new Terminus({
+          url: cfg.terminusUrl,
+          user: cfg.terminusUser,
+          password: cfg.terminusPassword,
+        })
+      : null;
   // docs/mathdoc.md §4.3: collaboration never widens document access. Each project route re-checks
   // the actor's role on the bound branch; a missing role reads as not found.
   const documentRole = async (
@@ -171,7 +216,7 @@ export function server(
     );
     return { ...b, branches, runs };
   };
-  return createServer(async (req, res) => {
+  const http = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (documents && (await documents.handle(req, res, url))) return;
@@ -387,7 +432,7 @@ export function server(
         return;
       }
       const match =
-        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals|next|decompositions)(?:\/([\w-]+))?(?:\/(draft))?)?$/.exec(
+        /^\/api\/projects\/([\w-]+)(?:\/(commands|jobs|history|documents|document-history|branches|facts|nodes|goals|next|decompositions|check|search|runs)(?:\/([\w-]+))?(?:\/(draft|preview))?)?$/.exec(
           path,
         );
       requireThat(match, "not_found", 404);
@@ -457,6 +502,101 @@ export function server(
         return;
       }
       const b: Board = await store.get(id, actor);
+      if (
+        operation === "runs" &&
+        child &&
+        draft === "preview" &&
+        method === "GET"
+      ) {
+        // §4.9: what accepting this assembly writes, computed as the writeback job computes it
+        // and not committed; once written, the batch that was.
+        const run = Object.hasOwn(b.runs, child) ? b.runs[child] : undefined;
+        requireThat(run, "not_found", 404);
+        const written = run.branch
+          ? Object.values(b.branches?.[run.branch]?.writebacks ?? {}).find(
+              (w) => w.run === child && w.status === "committed",
+            )
+          : undefined;
+        if (written) {
+          send(res, 200, { status: "written", writeback: written });
+          return;
+        }
+        requireThat(terminus, "documents_not_configured", 503);
+        const load = async (database: string, name: string) => {
+          try {
+            return await terminus.database(database, name).load();
+          } catch (e) {
+            if (e instanceof DocError)
+              throw new Fault("documents_unavailable", 502);
+            throw e;
+          }
+        };
+        send(res, 200, await previewWriteback(lean, load, b, child));
+        return;
+      }
+      if (operation === "check" && !child && method === "POST") {
+        // §2.7.8: LeanGround checks a draft on the project's base. Nothing is recorded and no
+        // certificate is made, so it does not count as a submission.
+        requireScope(who, "work");
+        const { source } = z
+          .object({ source: z.string().min(1).max(2000000) })
+          .strict()
+          .parse(await body(req));
+        requireThat(b.base?.root_module, "environment_not_configured", 409);
+        const out = checkResultSchema.parse(
+          await lean.check(source, [String(b.base.root_module)]),
+        );
+        send(res, 200, {
+          ok: out.ok,
+          ...(out.stage ? { stage: out.stage } : {}),
+          diagnostics: out.diagnostics,
+          axioms: out.axioms,
+          trust: out.trust,
+          missing_imports: out.missing_imports,
+          ms: out.ms,
+        });
+        return;
+      }
+      if (operation === "search" && !child && method === "GET") {
+        // §2.7.8: declarations of the project's base by name, through LeanGround.
+        const queries = url.searchParams.getAll("q").filter((q) => q.trim());
+        requireThat(
+          queries.length >= 1 &&
+            queries.length <= 10 &&
+            queries.every((q) => q.length <= 200),
+          "invalid_query",
+          400,
+        );
+        const kind = z
+          .enum(["theorem", "definition", "all"])
+          .default("theorem")
+          .parse(url.searchParams.get("kind") ?? undefined);
+        const limit = z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(20)
+          .parse(url.searchParams.get("limit") ?? undefined);
+        requireThat(
+          b.base?.base_key !== undefined,
+          "environment_not_configured",
+          409,
+        );
+        const out = searchResultSchema.parse(
+          await lean.search(b.base, queries, kind, limit),
+        );
+        send(res, 200, {
+          hits: out.hits.map((h) => ({
+            name: h.name,
+            kind: h.kind,
+            type: h.type,
+            trust: h.trust,
+            matched_query: h.evidence.matched_query ?? null,
+          })),
+        });
+        return;
+      }
       if (operation === "nodes" && child && draft && method === "GET") {
         // Agents start from the converted node: placeholders, definitions and identity.
         requireThat(documents, "documents_not_configured", 503);
@@ -682,4 +822,7 @@ export function server(
       }
     }
   });
+  // The LaTeX renderers are child processes: they stop with the server, or they keep it alive.
+  http.on("close", () => documents?.shutdown());
+  return http;
 }

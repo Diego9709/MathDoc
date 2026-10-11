@@ -1,12 +1,16 @@
 // The HTTP side of `mdc`: one request with the caller's token, errors with stable reasons.
 
-/** A failure with a stable `reason` code; `uncertain` when a sent request may have taken effect. */
+/**
+ * A failure with a stable `reason` code; `uncertain` when a sent request may have taken effect;
+ * `messages` is LeanGround's explanation, e.g. Lean's errors for a rejected proof.
+ */
 export class MdcError extends Error {
   constructor(
     public reason: string,
     public details?: string,
     public status?: number,
     public uncertain = false,
+    public messages?: string,
   ) {
     super(
       status
@@ -23,6 +27,7 @@ export class MdcError extends Error {
       ...(this.details ? { details: this.details } : {}),
       // The request may have taken effect: rerun the same command to replay it.
       ...(this.uncertain ? { uncertain: true } : {}),
+      ...(this.messages ? { messages: this.messages } : {}),
     };
   }
 }

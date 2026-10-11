@@ -74,6 +74,39 @@ export const TOOLS = [
     },
   },
   {
+    name: "check",
+    description:
+      "Have LeanGround check the goal file text now, on the project's base, and return Lean's diagnostics with line numbers. Nothing is submitted or recorded; use it before prove or split.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file,
+        text: { type: "string", description: "The whole edited goal file" },
+      },
+      required: ["file", "text"],
+    },
+  },
+  {
+    name: "lemma",
+    description:
+      "Find library declarations (Mathlib and published results of the project's base) whose names contain one of the queries, with their types. Look a lemma up before citing it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        queries: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+          description: "Parts of declaration names, e.g. `pow_of_mul_eq_pow`",
+        },
+        kind: { type: "string", enum: ["theorem", "definition", "all"] },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      },
+      required: ["queries"],
+    },
+  },
+  {
     name: "done",
     description:
       "End the lease on a goal file, with what was spent and learned.",
@@ -160,6 +193,23 @@ export async function call(
       if (a.wait === true) set("--wait", true);
       set("--message", a.description);
       return verbs.submit(ctx, f, name);
+    }
+    case "check": {
+      const f = fileName(a);
+      const text = str(a, "text");
+      if (text === undefined)
+        throw new MdcError("invalid_argument", "text is required");
+      await verbs.pulled(ctx, f);
+      await writeFile(resolve(ctx.cwd, f), text);
+      return verbs.check(ctx, f);
+    }
+    case "lemma": {
+      const queries = Array.isArray(a.queries)
+        ? a.queries.filter((q): q is string => typeof q === "string")
+        : [];
+      set("--kind", a.kind);
+      set("--max", a.limit);
+      return verbs.lemma(ctx, queries);
     }
     case "done":
       set("--spent", a.spent);

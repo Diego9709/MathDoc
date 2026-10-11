@@ -26,6 +26,16 @@ test(
       main(argv.split(" "), env, async () => input) as Promise<any>;
     try {
       await mdc(`init ${db}`);
+      // status names the caller and the default branch, then the branches they can read.
+      const status = await mdc("status");
+      assert.deepEqual(
+        [status.actor, status.project, status.projects[`${db}/main`].role],
+        ["alice", `${db}/main`, "admin"],
+      );
+      assert.equal(
+        ((await main(["-p", "other/dev", "status"], env)) as any).project,
+        "other/dev",
+      );
       const a = await mdc("new -t Alpha");
       const b = await mdc("new -t Beta");
       await mdc("dep add Alpha -t Beta");

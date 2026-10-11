@@ -193,6 +193,8 @@ export interface Run {
   status: "queued" | "running" | "failed" | "certified";
   certification_id?: string;
   failure?: string;
+  /** LeanGround's explanation of the failure, e.g. Lean's messages. */
+  details?: string;
   retryable?: boolean;
 }
 export interface Board {

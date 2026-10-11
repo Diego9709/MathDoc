@@ -9,6 +9,8 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.js";
+import { goalOf } from "../src/mdc/verbs.js";
+import { type Client, MdcError } from "../src/mdc/client.js";
 import { actors, client, deploy, env, isolated, ready } from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 import type { Board } from "../src/domain.js";
@@ -376,3 +378,27 @@ test(
     await flow({ url: env.lean!, token: env.leanToken! });
   },
 );
+
+test("a goal without a node is found by its name; a name two goals share is refused", async () => {
+  // The branch has no node by that title.
+  const c = {
+    request: async () => {
+      throw new MdcError("not_found", "no such node", 404);
+    },
+  } as unknown as Client;
+  const goal = (name: string) => ({ statement: name, declaration: { name } });
+  const [a, b, d] = ["a", "b", "d"].map((x) => x.repeat(64));
+  const board = {
+    goals: { [a]: goal("double_comm"), [b]: goal("twin"), [d]: goal("twin") },
+    branches: {},
+  };
+  assert.equal(await goalOf(c, board, "double_comm", "db", "main"), a);
+  await assert.rejects(
+    goalOf(c, board, "twin", "db", "main"),
+    (e: any) => e.reason === "ambiguous_goal",
+  );
+  await assert.rejects(
+    goalOf(c, board, "nothing", "db", "main"),
+    (e: any) => e.reason === "unknown_goal",
+  );
+});

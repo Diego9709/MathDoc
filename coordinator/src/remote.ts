@@ -1,13 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Fault } from "./domain.js";
+/** LeanGround's explanation of a refusal, such as Lean's messages, is kept up to this length. */
+export const MAX_DETAILS = 8000;
 export class RemoteError extends Fault {
   constructor(
     code: string,
     public retryable: boolean,
     public remoteStatus: number,
+    /** LeanGround's message, e.g. the Lean errors of a rejected proof. */
+    public details?: string,
   ) {
     super(code, 502);
   }
+}
+/** Text cut to MAX_DETAILS characters, marking the cut. */
+export function clip(text: string) {
+  return text.length > MAX_DETAILS
+    ? `${text.slice(0, MAX_DETAILS)}\n… (cut at ${MAX_DETAILS} characters)`
+    : text;
 }
 export async function responseJson(res: Response): Promise<unknown> {
   const text = await res.text();
@@ -20,16 +31,20 @@ export async function responseJson(res: Response): Promise<unknown> {
     throw new RemoteError("invalid_upstream_json", false, res.status);
   }
   if (!res.ok) {
+    // A fact error is {kind, reason, error}: `error` explains it (Lean's messages for a proof).
     const code = z
-      .object({ reason: z.string().optional() })
+      .object({ reason: z.string().optional(), error: z.string().optional() })
       .passthrough()
       .safeParse(data);
+    const reason = code.success
+      ? (code.data.reason ?? `upstream_${res.status}`)
+      : `upstream_${res.status}`;
+    const message = code.success ? code.data.error : undefined;
     throw new RemoteError(
-      code.success
-        ? (code.data.reason ?? `upstream_${res.status}`)
-        : `upstream_${res.status}`,
+      reason,
       res.status >= 500 || res.status === 429,
       res.status,
+      message && message !== reason ? clip(message) : undefined,
     );
   }
   return data;
@@ -87,5 +102,25 @@ export class LeanGround {
       body,
       LEAN_OPERATIONS.has(operation) ? this.leanTimeoutMs : SHORT_TIMEOUT_MS,
     );
+  }
+  /** Check a whole Lean file on these bases: Lean's diagnostics and axioms; no certificate. */
+  check(source: string, bases: string[]) {
+    return this.call("/v1/check", { source, bases }, this.leanTimeoutMs);
+  }
+  /** Library declarations whose names contain one of the queries, in this base. */
+  search(
+    base: Record<string, unknown>,
+    queries: string[],
+    kind: string,
+    limit: number,
+  ) {
+    return this.call("/v1/retrieval", {
+      request_id: randomUUID(),
+      base,
+      queries,
+      kind,
+      min_trust: "all",
+      limit,
+    });
   }
 }

@@ -101,6 +101,10 @@ async function flow(leanground: { url: string; token: string }) {
       )
     ).id as string;
     await dep.drain();
+    const status = async (c: typeof http, node: string) =>
+      (await c.view(node)).formalization.lean_certification.status;
+    // A definition has no goal: once LeanGround registered it, it shows as registered.
+    assert.equal(await status(http, d), "registered");
     const events = async (kind: string) =>
       (
         await http.ok(
@@ -223,8 +227,9 @@ async function flow(leanground: { url: string; token: string }) {
       ].sort(),
     );
     assert.equal(detail.needed_by[0], "main");
+    // double_comm has no node yet: it is found by the name `mdc goals` shows.
     assert.equal(
-      (await alice(["goal", comm.goal.slice(0, 12)])).premise_of[0].certificate,
+      (await alice(["goal", "double_comm"])).premise_of[0].certificate,
       d2.certificate,
     );
 
@@ -246,7 +251,8 @@ async function flow(leanground: { url: string; token: string }) {
     assert.deepEqual(onAlt.sort(), [p.root, comm.goal].sort());
 
     // The agent proves double_comm; the owner assembles alt through the second split.
-    const proving = await bob(["pull", comm.goal.slice(0, 12), "-o", "c.lean"]);
+    const proving = await bob(["pull", "double_comm", "-o", "c.lean"]);
+    assert.equal(proving.goal, comm.goal);
     const cfile = join(dirs.bob!, proving.file);
     await writeFile(
       cfile,
@@ -267,6 +273,40 @@ async function flow(leanground: { url: string; token: string }) {
     const run = Object.values(p.runs).find((r) => r.branch === "alt")!;
     assert.equal(run.status, "certified", JSON.stringify(run));
     assert.equal(run.route.root, d2.certificate);
+    // Before accepting, the preview shows what the batch would write, and writes nothing.
+    const previewPath = `/api/coordination/projects/${id}/runs/${run.id}/preview`;
+    const preview = await http.ok("alice", "GET", previewPath);
+    assert.equal(preview.status, "ready", JSON.stringify(preview));
+    assert.equal(typeof preview.assembled, "string");
+    const change = (kind: string) =>
+      preview.changes.find((c: { kind: string }) => c.kind === kind);
+    assert.deepEqual(
+      preview.changes.map((c: { kind: string }) => c.kind).sort(),
+      ["create_goal_node", "update_lean_block"],
+    );
+    assert.equal(change("update_lean_block").title, "double_add");
+    assert.match(change("update_lean_block").before, /:= sorry/);
+    assert.match(change("update_lean_block").after, /double_comm/);
+    assert.equal(change("create_goal_node").before, null);
+    assert.match(change("create_goal_node").after, /theorem double_comm/);
+    assert.deepEqual((await http.project(id)).branches!.alt.writebacks, {});
+    // Accepting writes alt's proof back: double_comm had no node, so the batch creates one,
+    // which shows as certified on alt like the nodes converted from the document.
+    await http.done(id, "alice", { type: "accept", run: run.id });
+    p = await http.project(id);
+    const batch = Object.values(p.branches!.alt.writebacks)[0];
+    assert.equal(batch.status, "committed");
+    // Once written, the preview names the batch that was.
+    const after = await http.ok("alice", "GET", previewPath);
+    assert.deepEqual(
+      [after.status, after.writeback.batch_id],
+      ["written", batch.batch_id],
+    );
+    assert.equal(batch.created.length, 1);
+    const altDocs = client(() => dep, db, "alt");
+    assert.equal(await status(altDocs, batch.created[0]), "certified");
+    assert.equal(await status(altDocs, root), "certified");
+    assert.equal(await status(altDocs, d), "registered");
 
     // Picks: alt's editor may change them; a reader of alt and an editor elsewhere may not.
     await http.ok("alice", "POST", "/api/projects", {
