@@ -8,8 +8,10 @@ The API process serves the editor at `/`. On load the page checks the stored
 token against `/api/me`; without a valid one it asks for an **access token**,
 which it then keeps in this browser's `localStorage`. Any later `401` response
 clears it and returns to the sign-in page. A delegated token works too; the page
-then acts as `PERSON/NAME` within the token's scopes. Use a private browser
-profile on shared machines.
+then acts as `PERSON/NAME` within the token's scopes. Both page headers show the
+actor you are signed in as; **Sign out** next to it forgets the token in this
+browser and returns to the sign-in page, for example to continue as someone
+else. Use a private browser profile on shared machines.
 
 ## Project directory
 
@@ -68,7 +70,8 @@ come from LeanGround certification when the node has a Lean block:
 | Derivable | Follows from certified results through conditional certificates, not yet assembled. |
 | Certified | A certificate without open premises exists. |
 | Changed since submission | The Lean text, or a definition it uses, changed after submission. |
-| Not accepted | The converter or LeanGround rejected the node; the reason is shown. |
+| Not accepted | The converter or LeanGround rejected the node; the reason is shown, and hovering the light shows LeanGround's explanation (Lean's errors for a refused proof). |
+| Registered definition | A definition node whose definitions LeanGround registered; definitions have no goal to prove. |
 
 The graph view colors nodes only by whether they have Lean code (gray: none,
 yellow: Lean block present) and counts each kind; certification is shown on
@@ -101,14 +104,26 @@ The toolbar's **Collaboration** dialog shows the database's project boards you
 are a member of, as seen from the current branch: the current board first, then
 superseded boards and earlier per-branch proof requests, with a selector when
 there are several. It refreshes every five seconds. Owner controls appear for
-the board's owner (a delegated token also needs `maintain`).
+the board's owner (a delegated token also needs `maintain`). A refused command
+shows its reason until the next command or **×**; a command sent while a
+background job changed the board is sent again at the latest revision (up to
+three times), so a sync does not make a click fail.
+
+Above the tabs, one line says what the current branch's proof waits for and
+links the tab that does it: an open goal to prove (the first few, by name), a
+proposed decomposition to review, a route ready to assemble, a running or failed
+assembly, a certified assembly to write back, or **Done** once a certified
+assembly is written into the document (or the root is refuted). Owners read
+"your review"; members read what waits for the owner. A tab shows a count when
+something there waits: open tasks, decompositions pending review, certified
+assemblies not written back.
 
 | Tab | Contents |
 | --- | --- |
-| Proof overview | Root status; warnings for a read-only board, a stale or failed conversion of this branch, or a failed sync; **Attach this branch** when the branch is not attached; attached branches with state, number of picks and whether the route closes; owner, members, budget (spent, reserved, total), trust, review policy (owners: **Require review** / **Waive review**), last sync; every node the current branch converted, with role, state, reason and status, and **Resubmit** for theorem nodes; recent failed jobs; **Sync now**. |
-| Task board | Allocation and lease length for claims; tasks in the server's recommended order, with goal (and the goal a negation refutes), kind, status (**inactive**, and not claimable, when no active decomposition leads to the goal), lease holder and time left, and notes (**Add note**); **Claim**, and **Extend** / **Release** for your own lease; budget by participant; owners add **Decompose** tasks. |
-| Decompositions | **Pending review**: proposed decompositions with premises, description, submitter and the branches that need them; owners **Activate** or **Retire** them with an optional comment. Then certificates per goal with premises, trust and state, marking refuted goals and premises, cycles, certificates no longer shared, the last review, route membership and the branches picking each; owners activate, pause or retire. **Use on this branch** / **Unpick** set the current branch's pick of an active decomposition, for the owner and for members who can write the branch (a delegated token needs `edit`). |
-| Review | Owners **Assemble a route** for the current branch once its route closes, **Retry same plan** after a retryable failure and **Accept and write back** into the assembly's branch (not while it is stale); every assembly with its route; the current branch's writeback batches with their operations or abort reason. |
+| Proof overview | Root status; warnings for a read-only board, a stale or failed conversion of this branch, or a failed sync; **Attach this branch** when the branch is not attached; with more than one branch, each branch's document state, number of picks and whether its route is complete; the document nodes the current branch converted, with kind, submission state and reason, goal status and **Resubmit** for theorem nodes, and **What these words mean** for the submission states and goal statuses; recent failed jobs with LeanGround's explanation (Lean's errors for a refused proof); the project — owner, members, budget (spent, reserved, total), minimum trust, review policy (owners: **Require review** / **Waive review**), last sync — folded under one summary line; **Sync now**. |
+| Task board | Open tasks, whose goal active certificates do not prove yet, in the server's recommended order, with goal (and the goal a negation refutes), kind, status (**inactive**, and not claimable, when no active decomposition leads to the goal), who holds the claim and its time left, and notes (**Add note**); the budget a claim reserves and how long it lasts; **Claim**, and **Extend** / **Release** for your own claim; done tasks folded away; budget by participant (a delegated token as its person and token name); owners add **Decompose** tasks for unproved goals. |
+| Certificates | **Pending review**: proposed decompositions with premises, description, submitter and the branches that need them; owners **Activate** or **Retire** them with an optional comment. Then each goal with its statement and its certificates in two groups, **Complete proofs** and **Decompositions** (⇐ premises with their status), each with its origin (proved or split by an actor, result of an assembly, from a document node, or found in LeanGround), its state and trust when not active and trusted, refuted goals and premises, cycles, certificates no longer shared, the last review, **on BRANCH's route** for the certificates **Assemble a route** would use on the current branch (its picks, elsewhere the fewest premises first), and the branches picking each; owners activate, pause or retire. **Use on this branch** / **Unpick** set the current branch's pick of an active certificate, for the owner and for members who can write the branch (a delegated token needs `edit`). |
+| Assemble & write back | What assembling and writing back do; owners **Assemble a route** for the current branch once its route is complete (otherwise why not yet), **Retry same plan** after a retryable failure and **Accept and write back** into the assembly's branch (not while it is stale); every assembly, newest first, with its route (each goal's certificate, complete proof or decomposition), a failed one with LeanGround's explanation, and its writebacks — what a committed one wrote, or why one aborted — instead of the button once written back; **Preview changes** on a certified assembly shows what accepting writes, read against the branch as it is now — each node's Lean text as a line diff (new nodes as added lines) and the assembled proof — or why the batch would abort, and writes nothing. When a writeback is committed into the current branch while the dialog is open, the open node and the graph reload; with unsaved edits, a banner asks you to save or discard them and refresh instead. |
 
 Read-only boards (a superseded project, or a per-branch proof request of an
 earlier version) say why and disable their commands. Without a project, the

@@ -346,6 +346,12 @@ Project（= 一个 TerminusDB 数据库）
    所以改为所有命令都在一次性容器里运行：共用 runtime 的网络命名空间、以调用者的 uid 运行、挂载当前目录；文件参数因此是当前目录下的路径，
    不再是容器内的路径；维护者命令的重放日志放在部署目录的 `state/`。
 10. **界面**：对当前分支有写权限的成员也显示「Use on this branch」和「Unpick」；角色取自目录接口 `/api/projects`。
+11. **看板是否改变按键排序后的 JSON 比较**（使用演示后补，§3.8 末）：jsonb 会重排对象的键，所以同一个值读回来和再次收到时键序不同，
+    不能算改变；任务行与尝试行是否写回也按同样的规则比较。
+12. **界面发命令**：按当前状态校验的命令带 `If-Match: *`；其余命令遇到 `revision_conflict` 时读取最新修订号、用同一个幂等键重发，最多 3 次，
+    与 `mdc` 一致。被拒命令的错误一直显示到下一次命令或手动关闭，定时刷新只清除加载错误。
+13. **节点状态 `registered`**：定义节点没有目标，已登记时显示 `registered`（附定义 ID），被拒时仍是 `rejected`，其余显示 `not_submitted`。
+    回写新建的节点（没有节点的前提和定义）按写入的内容记为该分支已转换的节点，所以立即显示其目标的状态或 `registered`。
 
 ### 2.7 路线图
 
@@ -402,7 +408,7 @@ Project（= 一个 TerminusDB 数据库）
 - 协调层访问 LeanGround 的每个请求都是 120 秒超时，而 LeanGround 自己对单个请求的默认上限是 900 秒（`--timeout-s`）。
   所以一个合法但超过 2 分钟的检查一定失败；服务刚启动、Mathlib 还在导入时，请求也会超时（§3.7 末）。
 - 可重试的作业失败最多重试 5 次、每次间隔 5 秒，所以 LeanGround 中断超过约半分钟，作业就永久失败 [推断：按 `store.fail` 的规则计算]。
-- TerminusDB 在多个事务同时写系统库时会返回 500「Transaction retry count exceeded」（§3.9）；CI 逐个运行测试文件，所以没有遇到。
+- TerminusDB 在多个事务同时写系统库时会返回 500「Transaction retry count exceeded」（§3.10）；CI 逐个运行测试文件，所以没有遇到。
 - CI（`Release check`：原生测试与容器冒烟测试）在每次推送到 GitHub 时运行，已运行 3 次、全部通过。§5 原来说「没有运行过」，已过时。
 - 容器冒烟测试把 worker 指向一个不可达的地址，所以导出的部署从未连真实 LeanGround 运行过。部署包里的 `mdc` 包装脚本在 runtime 容器里
   执行命令，所以 `mdc pull` 写出的文件落在容器里，宿主机上的 Agent 用不了工作动词。
@@ -443,6 +449,44 @@ Project（= 一个 TerminusDB 数据库）
    证完根目标，owner 组装并接受，证明写回分支文档。
 
 **不在本阶段**：worker 一次只执行一个作业，长时间的 Lean 检查会挡住其他项目的作业；`mdc check`（等 LeanGround 接口）；界面上的令牌与成员管理。
+
+#### 2.7.8 阶段 7：IMO 实战
+
+**目标**：用真实的 IMO 题跑通「题面 → Lean 陈述 → 拆解 → 证明 → 组装 → 写回 → 复盘」，检验 MathDoc、DeepSeek Harness（dsh）与 EvoHarness 能否配合，
+并记录真实数据：每题是否完成、耗时、LeanGround 提交次数（通过与被拒）、拆解个数（提议、启用、撤下）、EvoHarness 调用与花费、
+人工介入次数、最终证明行数（对照 LEAP）、本地 Lean 与 LeanGround 结论不一致的次数。
+
+**分工**：
+
+| 角色 | 由谁 | 做什么 |
+|---|---|---|
+| owner | 维护者本人，浏览器与 `mdc` | 建库、写题面和陈述、审阅拆解、批准 EvoHarness 攻坚、组装、写回、给自然语言证明打分 |
+| 工作 agent | dsh 网页会话，预设「证明模式」 | 用工作区里的 `./mdc` 领取目标、写证明、拆解；难的目标经 owner 同意后调用 EvoHarness 的证明工具 |
+| 裁判 | LeanGround（Lean 4.33.1 + Mathlib，本机唯一基座） | 判定每一次提交与最终组装；EvoHarness 本地 Lean 4.27.0 的结果只算候选 |
+
+**选题**（IMO-LeanProofBench v2，陈述由专家写成；本机没有维护者以前的解题记录）：
+第 1 轮 PB-Basic-018（数论，pre-IMO），第 2 轮 PB-Basic-020（数论，IMO-easy），第 3 轮 PB-Basic-003（代数函数方程，IMO-easy），
+备选 PB-Basic-021。每题一个数据库（`imo-pbbasic018` 等），因为一个数据库只有一条根定理。节点里只放题面和陈述，不放参考解答，因为 agent 能读文档。
+维护者 2026-10-10 决定：第 1 轮之后直接上需要多层拆解的难题，第 2 轮改为 PB-Advanced-029（USAMO 2025 P5，数论，IMO-medium；
+LEAP 证明 197 行、8 条引理，原第 2、3 轮的三道 IMO-easy 题，LEAP 都只有 1 条引理）。根定理自然分成两半——k 为奇数时 n = 2 是反例、
+k 为偶数时对一切 n 成立——后一半还要再拆。工作区模板随之改为：没有别的目标可做时，agent 用提问工具请 owner 审阅拆解，审完继续。
+
+**准备**（2026-10-10 完成）：
+
+- dsh 更新到 0.2.1-alpha.2，EvoHarness 的 dsh 插件随之移植（§3.9）；模型用千问通道的 `deepseek-v4.1-flash`。
+- dsh 会把名字含 TOKEN、KEY、SECRET、PASSWORD 的环境变量从 agent 的 shell 里删掉，所以每个工作区放一个 `./mdc` 包装脚本，
+  从同目录的 `.mdc-credential` 读 owner 签发的委派令牌（`work` 范围）。
+- agent 用 EvoHarness 的「证明模式」预设（含只搜索、不抓取网页的工具，用来查 Mathlib 引理）。工作区的 `AGENTS.md` 规定流程、
+  提交次数上限（每目标 8 次）和升级到 EvoHarness 的条件（失败 3 次且经 owner 同意）。
+- 工具包放在 `~/imo-run`：题目（不含解答）、工作区模板，以及 owner 的准备脚本 `bin/imo-round`（`setup` 建库、节点、证明环境、项目、
+  工作区和 agent 的委派令牌，可重复运行；`status` 报告目标、待审拆解和组装）。owner 的令牌放在 `~/imo-run/.owner-credential`。
+- Skill `imo-round`（`~/.agents/skills/imo-round`）让 dsh 的普通会话代 owner 运行这个脚本并汇报；审阅、组装和接受仍由 owner 决定。
+  「证明模式」预设不加载 Skill，所以由 owner 的会话使用。
+
+**泄题风险不处理**（维护者决定，2026-10-10）：`superhuman` 仓库里有 LEAP 的 Lean 证明、参考解答和评分细则，题目也在 GitHub 上公开，
+dsh 的沙箱又不限制读和网络，模型的训练数据也可能见过这些题。所以实战结果衡量的是「这套流程能否把证明做出来」，不能当作模型解题能力的公平评测。
+
+**验收**：三轮各有记录（完成或卡在哪里），指标写进 §3；至少第 1 轮的根定理在 LeanGround 上组装通过并写回文档。
 
 ## 3. 研发进度
 
@@ -592,7 +636,7 @@ Project（= 一个 TerminusDB 数据库）
 - 证否（替身）：拆法变为 `refuted`，相关任务取消，组装以 `no_active_route` 被拒，根目标上有说明原因的笔记，`next` 改为推荐根目标。
 - `next`：手写图（三个分支、四个候选、一次失败）上的推荐顺序 B、C、Q、D 与人工计算一致。
 - 变异检验 10 处全部被发现。
-- 2026-10-09 在本机 LeanGround 上补跑阶段 4、5 的真实测试：服务刚启动时第 1 轮的 5 项都在 120 秒超时失败（Mathlib 还在导入，见 §3.9）；
+- 2026-10-09 在本机 LeanGround 上补跑阶段 4、5 的真实测试：服务刚启动时第 1 轮的 5 项都在 120 秒超时失败（Mathlib 还在导入，见 §3.10）；
   服务热起来后第 2–4 轮全部通过（`scenario` 37.6–41.6 秒）。浏览器 e2e 在设好 `MDC_LATEX_PYTHON` 后 15 项全部通过。
 
 **结论**：k = 20、n = 1000 下每条命令的 p95 都低于 500 ms，3 次运行全部达标；证否与 `next` 的验收成立。状态为「已实现，待评审」。
@@ -638,7 +682,154 @@ Project（= 一个 TerminusDB 数据库）
 **未覆盖**：冷缓存下的冷启动没有复现；worker 一次只执行一个作业，最长 960 秒的 Lean 调用会挡住其他项目；界面上 editor 的选择按钮没有用 editor 身份做 e2e；
 部署验收只在本机 colima 上做过一次；虚拟机未共享的目录会被挂成空目录；MCP 工具没有 `goal`、`review`。
 
-### 3.9 已知问题
+**使用演示中发现并修正的缺陷**（2026-10-09）
+
+- 目的：带维护者在浏览器里走一遍完整流程时发现 3 个缺陷，修正并加测试。
+- 背景：演示在本机 LeanGround 上进行，数据库 `tour`、身份 `alice`（owner）与 `bob`（Agent）。
+- 结果 [实测]：
+  - 第一次「Assemble a route」返回 409，界面却没有提示。看板事件显示，演示结束后每次空同步仍让修订号加一（24 → 35）；
+    对同一看板手动运行同步，作业里只有 `last_sync` 改变，修订号仍加一（n = 2）。原因是比较看板时用的是按插入顺序的 JSON，
+    而 jsonb 读回的目标身份与 LeanGround 再次给出的身份键序不同。改为按排序后的键比较后，再运行 2 次同步，修订号不变。
+    界面另有两处：定时刷新在 5 秒内清掉了被拒命令的错误；冲突时不会重发。所以这次 409 对使用者不可见。
+  - 已登记的定义节点 `double` 显示「Not accepted」：状态计算把「没有目标」一律当作被拒。
+  - 回写为 `double_eq` 新建的节点显示「Not submitted」：回写只更新已有绑定的节点。
+- 测试：存储层「键序不同不算改变」1 项、前端命令重发 3 项、`maintain` 中定义节点与回写新建节点的状态断言；
+  撤掉各项修正时对应测试失败（3 处变异）。协调层 66 项（连真实 LeanGround）、前端单元测试 36 项、浏览器 e2e 15 项全部通过。
+- 结论：3 个缺陷都已修正并有测试守住。
+- 未覆盖：只在本机演示环境中观察到。修正后在第二次演示中各验证了 1 次（见下一条），没有反复点或并发测试。
+
+**第二次演示中发现并修正的问题**（2026-10-09）
+
+- 目的：演示阶段 6 的维护者命令、第二条证明路线的分支和 editor 改选，并修正途中发现的 1 个缺陷和 3 处不顺手的地方。
+- 背景：同一个 `tour` 库。bob 用另一种拆法（前提 `double_comm`）拆根定理，alice 用 `mdc review` 审阅，
+  用 `mdc branch new alt --pick` 开分支；组装和回写在浏览器里完成，bob 作为 `alt` 的 editor 在浏览器里改选。
+  上一轮的 3 个修正在界面上各验证了 1 次：定义节点显示「Registered definition」、第一次点组装就成功、回写新建的节点显示「Certified」。
+- 结果 [实测]：
+  - **API 服务收到 SIGTERM 后不退出**：本机留着 9 个这样的进程，每个带 2–4 个 LaTeX 渲染子进程。
+    原因是停止时只关了 HTTP 服务和连接池，渲染子进程的管道让事件循环一直不结束；它们多数是浏览器 e2e 测试启动后留下的。
+    改为 HTTP 服务关闭时停掉所有渲染进程。演示服务上先启动 2 个渲染进程再发 SIGTERM（n = 1），约 0.4 秒退出，没有遗留渲染进程。
+  - **网页没有退出登录**：只有收到 401 时才会清掉令牌，换身份只能手动清浏览器存储。现在两个页头都显示当前身份和「Sign out」。
+  - **`mdc goals` 显示的名字，`mdc pull` 不认**：一个还没有节点的目标（例如 split 新加的前提）只能用 GoalKey 前缀。
+    现在找不到节点时按 `mdc goals` 显示的名字查找，同名时报 `ambiguous_goal`。
+  - **已经写回的组装仍显示「Accept and write back」**：再点一次不会重复写入（写回批次的编号由组装决定），但容易误导。
+    现在显示「Written back to branch …」。
+- 测试：服务进程停止 1 项（启动真实的 `serve` 子进程和替身渲染器）、目标名查找 1 项、`maintain` 中改用名字领取、
+  前端「已写回」判断 1 项、e2e 中的退出登录与已写回显示。撤掉服务停止和名字查找的修正时，对应测试失败（2 处变异）。
+  协调层 68 项（连真实 LeanGround）、前端单元测试 37 项、浏览器 e2e 15 项全部通过；e2e 跑完后没有遗留 API 服务。
+- 结论：这 4 处都已修正并有测试守住。
+- 未覆盖：
+  - 9 月 29 日留下的 6 个旧进程没有清理。
+  - 以下 2 点按设计如此，没有改：
+    - 根定理已证完时，`mdc next` 不再推荐目标，而 `mdc goals` 的 `needed_by` 仍列出路线能走到的分支；
+    - 回写只添加依赖边，所以 `alt` 上的 `double_add` 改用 `double_comm` 后仍显示依赖 `double_eq`。
+
+**动手课中发现并修正的问题**（2026-10-10）
+
+- 目的：维护者自己动手走一遍"分解、证明、组装、写回"时，修正 1 个缺陷，实现记下的 2 条待办。
+- 背景：数据库 `lesson`，只用 owner 一个身份，审阅已关闭；根定理 `triple_add_zero`，中间引理 `triple_eq`。
+- 结果 [实测]：
+  - **证明被拒时看不到原因**：用 `rfl` 证 `triple_eq` 被 LeanGround 拒绝，`mdc prove --wait` 只给出 `verification_failed`。
+    LeanGround 的拒绝响应是 `{kind, reason, error}`，Lean 的报错在 `error` 里；协调层只保留了 `reason`。
+    现在报错存进作业的 `details`（新列，最多 8000 字符）、被拒节点绑定的 `details` 和失败组装的 `details`；
+    `mdc prove/split` 的输出多一项 `messages`，并把报错原样打印到标准错误；协作窗口的「Recent failures」、组装记录和节点状态灯的悬停提示也显示它。
+  - **待办：`mdc status` 不显示当前身份和默认分支**：输出改为 `{actor, project, server, projects}`。
+  - **待办：「on route」的含义和字面不一致**：原来标的是"被某次已通过的组装用到过"，与当前分支的选定无关。
+    现在按协调层组装时选路线的同一规则（选定优先，其余前提少者优先、再按 ID）算出当前分支的路线，标为「on 分支's route」。
+- 测试：被拒证明带回 Lean 报错 2 项（LeanGround 替身用 `-- wrong:` 注释模拟拒绝；真实 LeanGround 上用 `rfl` 证 `n + n = 2 * n`），
+  `mdc status` 断言 1 处，前端路线选择 1 项，e2e 中断言「on main's route」恰好标出 2 张证书。
+- 结论：3 处都已实现并有测试守住。
+- 未覆盖：失败组装的 `details` 没有测试，因为替身的组装总是通过，真实 LeanGround 上也很难构造组装失败；
+  前端的路线选择是协调层 `selectRoute` 的复制实现，两边只靠同样的规则和各自的测试保持一致。
+
+### 3.9 项目阶段 7 的要点（IMO 实战）
+
+计划见 §2.7.8。本节先记为实战做的准备和改进，再记每一轮的复盘。
+
+**实战工具包与 owner 的准备脚本**（2026-10-10）
+
+- `~/imo-run`：题目（不含解答）、agent 工作区模板（`AGENTS.md`、从文件读委派令牌的 `./mdc`）、owner 的 `owner.env`，
+  以及 `bin/imo-round`：`setup` 建库、节点、证明环境、项目（审阅开启）、等转换、建工作区、签发 agent 的令牌，可重复运行；`status` 报告进度。
+  Skill `imo-round`（`~/.agents/skills/imo-round`）让 dsh 的普通会话代 owner 运行它。用备选题 PB-Basic-021 试运行一次后清理 [实测]。
+
+**为实战更新 dsh 并移植 EvoHarness 插件**（2026-10-10）
+
+- 目的：实战要用 dsh 运行 agent、用 EvoHarness 攻坚；本机 dsh 落后上游 8258 个提交，构建失败。
+- 结果 [实测]：dsh 分支 `evo-harness-spike` 合并上游 0.2.1-alpha.2；EvoHarness 的 dsh 插件按 dsh 升级指南移植（去掉 invariant 伴生插件，
+  子 agent 改用 `startActivation`，候选运行时的配置以逐行的 agent 核心取代被删除的 spine 组件包）。插件 8 个测试文件、112 项测试通过。
+  新版 dsh 不再读 `~/.dsh/settings.yaml`，第一次启动时把它导入当时的配置档；导入只进了 `headless`，已复制到 `web`。
+  千问通道恢复后，默认模型 `deepseek-v4.1-flash` 的无界面运行返回预期回答（n = 1）。
+- 未覆盖：插件里需要真实模型的 `guard.e2e.ts` 固定走 DeepSeek 官方接口，没有运行；EvoHarness 研究模式的 `evo_start`
+  依赖已被上游删除的 `jsonrpc-demo` 运行时，实战不用，没有修。
+
+**把 LeanGround 的检查与检索交给 agent**（2026-10-10）
+
+- 目的：第 1 次实战尝试中，agent 只能在本机 LeanGround 的 Mathlib 源码里 `grep` 引理，写完证明只能正式提交才知道对不对；
+  LeanGround 本身有草稿检查（`POST /v1/check`，不发认证）和按名字检索声明（`POST /v1/retrieval`）。
+- 结果 [实测]：协作服务新增 `POST /projects/ID/check` 与 `GET /projects/ID/search`，按项目的基座转发给 LeanGround，
+  LeanGround 的地址和令牌仍只在协作服务里。`mdc check FILE` 返回 Lean 的诊断（行、列、原文），不记录、不算提交，并续租；
+  `mdc lemma QUERY…` 返回名字、类型和信任等级（`mdc search` 已是文档节点的检索，所以叫 `lemma`）。`mdc mcp` 增加同名工具。
+  直接调用本机 LeanGround：检索约 0.5 秒，热状态下草稿检查约 8.5 秒。
+- 测试：替身与真实 LeanGround 各 1 项：错误的证明在正确的行报出 `rfl` 失败，正确的证明通过；检查前后看板修订号和作业数不变；
+  `Nat.add_comm` 能检索到；非成员得到 404。撤掉"把原文交给 LeanGround"这一处时测试失败。
+- 未覆盖：LeanGround 的检索只按名字片段匹配，不支持按类型或语义搜索；`show_declaration`（看一条声明的源码）没有 HTTP 接口，没有暴露。
+
+**组装与写回的预览，写回后自动刷新**（2026-10-10）
+
+- 目的：第 1 轮组装和写回时，「Review」里只有证书编号，看不到组装出的证明，也看不到接受会改什么；写回后要手动刷新才看得到新的 Lean 块。
+- 结果 [实测]：新增 `GET /projects/ID/runs/RUN/preview`，用写回作业的同一段计算（`batchInputs` 与 `buildBatch`，作业也改用 `batchInputs`）
+  算出接受会写的批次但不提交：每个节点的 Lean 文本前后对照、新建的节点、LeanGround 认证过的组装原文，或批次会中止的原因。
+  「Review」里每条已认证、未写回的组装有「Preview changes」，按行对比显示改动。协作窗口发现当前分支有新提交的写回时，
+  重新加载打开的节点和依赖图；有未保存的编辑时不刷新，改为横幅提示。
+- 测试：`maintain` 中接受前的预览（根定理的 Lean 块从 `:= sorry` 改为用 `double_comm` 的证明、新建 `double_comm` 节点、预览不写入）
+  与接受后的预览（返回已提交的批次），替身与真实 LeanGround 各一遍；行对比单元测试 3 项；e2e 中打开预览、展开组装原文，
+  并去掉了写回后的手动刷新，改为等节点自动变成 Certified。
+- 未覆盖：预览只在窗口里按需加载，写回后不再显示改动前的文本；自动刷新只在协作窗口打开时生效。
+
+**「Decompositions」改为「Certificates」**（2026-10-10）
+
+- 目的：第 1 轮组装两次后，这一页列出 3 条一模一样的「complete proof」，看不出哪条是 agent 证的、哪条是组装的结果；页名叫拆解，却没有拆解。
+- 结果 [实测：浏览器]：页名改为「Certificates」；每个目标先给出陈述，证书分「Complete proofs」和「Decompositions」两组；
+  每条注明来源（谁证的或谁拆的、哪次组装的结果、来自哪个文档节点、在 LeanGround 里发现）；状态和信任等级只在不是 active、trusted 时显示；
+  说明改成平白的话；按钮加了用途说明。e2e 断言两个分组和「from the document node」的来源。
+
+**协作窗口改为先说「下一步」**（2026-10-10）
+
+- 目的：用户反馈协作窗口难懂。四个标签平铺，看不出现在该做什么；「Review」标签做的是组装和写回，而审阅拆解在 Certificates 页；
+  概览页满是 attached、Picked decompositions、Route closed 这类内部词，State 与 Status 两列重复。
+- 方法：标签下方加一行「下一步」，由看板状态算出（`nextStep`，web/src/lib/coordination.ts），并链接到负责这件事的标签。依次判断：
+  分支未接入 → 正在转换 → 根被否定 → 组装进行中 → 已认证待写回 → 已写回（Done）→ 上次组装失败 → 路线完整可组装 → 有拆解待审阅 → 还有哪些目标没有证明（列名字）。
+  「还没有证明」只算 active 证书（`solvedGoals`，与服务端 `rankGoals` 一致）；目标状态也会算 proposed、paused 的证书，不用来判断。
+- 结果 [实测：浏览器，单元测试 3 例，e2e 1 例]：
+  - 「Review」改名「Assemble & write back」；标签上显示待办数（未证任务、待审阅拆解、未写回的已认证组装）。
+  - 概览：只有一个分支时不显示分支表；节点表列名改为 Kind、Submission、Goal，附「What these words mean」逐词解释；
+    owner、成员、预算、信任、审阅策略收进一行摘要，展开后每项有一句说明。
+  - 任务板：先说明任务、认领、预算是什么；已证的任务折叠为「Done」；Lease 列改为「Claimed by」；委托令牌显示为「人（token 名）」。
+  - 组装页：先说明组装与写回各做什么；组装按新到旧排列；路线每一步注明是完整证明还是拆解；写回记录并入对应的组装卡片；
+    组装按钮不可用时说明原因。
+  - e2e 断言三个阶段的「下一步」（可组装、待写回、Done）和 Certificates 标签上的待审阅数。
+- 未覆盖：「下一步」只看当前分支；多分支时别的分支要做什么，仍需看分支表。
+
+**第 1 轮：PB-Basic-018**（2026-10-10）
+
+- 目的：用最简单的一题跑通「建项目 → agent 证明 → 组装 → 写回」。
+- 背景：owner 手动建项目（审阅开启）；证明 agent 在 dsh 网页会话里工作，模型为千问通道的 `deepseek-v4.1-flash`。
+  会话的工作目录是 `~/imo-run`、预设是普通预设，没有按计划进入题目工作区和「证明模式」，所以 EvoHarness 的工具不可用。
+- 结果 [实测：会话记录与看板]：
+  - agent 没有拆解，直接写出完整证明：先证 y < x，再在整数上推出 (x−y)(2x+2y+1) = y²，证明两个因子互素，
+    最后用自写的引理「互素的两数之积是平方数，则各自是平方数」。证明 84 行非空行（去掉注释 70 行），LEAP 为 111 行。
+  - 用时 29 分钟。`mdc check` 与 `mdc lemma` 在第 22 分钟才上线，之后约 6.5 分钟证完。
+  - `mdc lemma` 8 次，`mdc check` 4 次，`mdc prove` 2 次：第 1 次因为用了 `private lemma` 被 `mdc` 在本地拒绝、没有发出，第 2 次通过。
+    LeanGround 正式提交 1 次。拆解 0，EvoHarness 0，本地与 LeanGround 结论不一致 0。
+  - 千问通道的内容审核 5 次把正常的数学推理判为不当内容并中断回合（`PI_AI_ERROR`），每次都要 owner 说「继续」，这是这一轮唯一的人工介入。
+  - owner 组装了两次、写回了两次（第二次没有新的改动）；文档里根节点的 Lean 块成为完整证明，状态 certified。
+- 结论：流程跑通。agent 能借 `lemma` 找引理、借 `check` 迭代，一次正式提交即通过。
+- 未覆盖与改进：
+  - 内容审核误判是最大干扰，需要换通道或让 dsh 对这类错误自动续跑；
+  - `AGENTS.md` 应写明目标文件不允许的声明（`private`、`namespace`、`#` 命令等）；
+  - 下一轮按计划在题目工作区里用「证明模式」开会话，让 EvoHarness 可用；
+  - 泄题风险不处理（§2.7.8），模型可能见过这道题。
+
+### 3.10 已知问题
 
 - **Monaco 着色用例不稳定**：[实测，16 次运行失败 2 次] 编辑器显示后 4–40 毫秒内会重新着色一次，测试恰好在这个窗口取样就会失败。
   2026-10-09 又在 2 次运行中失败 1 次。
@@ -649,6 +840,11 @@ Project（= 一个 TerminusDB 数据库）
   「Transaction retry count exceeded in internal operation」。[实测] 20 个并发建库中失败 1–6 个；阶段 6 起客户端对这个错误最多重发 3 次，同样条件下 60 个全部成功。
 - **LeanGround 安装脚本原地覆盖已签名的二进制**：macOS 会拒绝运行；本机靠「写新文件再改名」绕过，LeanGround 仓库本身没有修改。
 - **前端体积基线未更新**：`web/perf/baseline.json` 仍是移除本地 Lean 之前的数值。
+- **「证明模式」预设在 dsh 0.2.1-alpha.2 里不可用**（2026-10-10 发现）：[推断：读 dsh 源码与 web 配置] EvoHarness 的安装脚本把预设写进
+  `~/.dsh/.agent-presets/proof/`，这一版 dsh 不再读这个目录，预设要写成插件包（bundle）里的一行并装进配置；web 配置没有装这个包，
+  所以网页里选不到「证明模式」，EvoHarness 的证明工具也就不可用。另一条路是 `scripts/dsh_proof.sh` 用 `--patch` 给整个 dsh 服务加上证明工具，
+  但补丁里的模型通道还是返回 403 的旧网关，需要改成千问通道。第 2 轮先用普通预设开始。
+  另外，网页会话的工作目录是会话所属的「工作区」（在 dsh 网页侧栏「添加工作区」里选的目录），与 `dsh web` 在哪个目录启动无关，第 1 轮工作目录不对就是这个原因。
 
 ## 4. 技术细节
 
@@ -788,6 +984,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `insufficient` / `derivable` / `certified` | 目标状态；附 `project`、`branch`（显示的是哪个分支的转换）、`goal`、`minimum_trust`、`checked_at` |
 | `stale` | 节点或其陈述所用定义的 Lean 文本在转换后改了 |
 | `rejected` | 转换器或 LeanGround 拒绝了它，附原因 |
+| `registered` | 定义节点：其定义已在 LeanGround 登记，附 `definition_ids`；定义没有要证的目标。还在等依赖登记的定义显示 `not_submitted` |
 
 **状态来源的优先顺序**：
 
@@ -1062,7 +1259,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 - 子令牌没有管理界面；证否只由否定的完整证明触发；
 - 审阅只限 owner，没有审阅者名单和通知；
-- `mdc` 没有 `check`（等 LeanGround 接口）；MCP 工具没有 `goal`、`review`；
+- MCP 工具没有 `goal`、`review`；
 - 续租只在调用 `mdc` 时发生：Agent 超过租期不调用 `mdc`，租约就会过期（§2.6 项目阶段 2 决定 1）；
 - worker 一次只执行一个作业，长时间的 Lean 检查（最长 960 秒）会挡住其他项目的作业；
 - 删除的分支不会自动移出看板；

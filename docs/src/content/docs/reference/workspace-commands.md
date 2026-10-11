@@ -37,7 +37,7 @@ taken effect). `mdc -h` prints the command list.
 
 | Command | Behavior |
 | --- | --- |
-| `mdc status` | `{server, projects}`: every branch you can read, with URL and your role. |
+| `mdc status` | `{actor, project, server, projects}`: who you are, your default branch (`-p` or `MDC_PROJECT`, `null` without one), and every branch you can read, with URL and your role. |
 | `mdc init DATABASE` | Create a database with a `main` branch; you become its owner. Admin only. |
 | `mdc remove DATABASE` | Delete the database, all branches and history, and its workspace record. Admin only; no prompt. |
 | `mdc grant ACTOR owner\|editor\|viewer\|none -p DB/BRANCH` | Set ACTOR's role on that branch (`none` removes it). ACTOR must be a name in `MDC_ACTORS`. Owner or admin. |
@@ -183,6 +183,8 @@ fail with `workspace_server_mismatch`.
 | `mdc pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with K1,K2] [--no-claim]` | Claim the goal's task (lease of S seconds, 30 to 3600, default 3600; N budget units reserved, default 0) and write its goal file, by default `<first 8 digits of the GoalKey>-<conclusion>.lean`. Never overwrites a file (`file_exists`). `--with` adds more goals as available premises; `--no-claim` writes the file without a lease. |
 | `mdc prove FILE [--wait] [--dry-run] [--again]` | Submit the file as a complete proof (`has_premises` if a `sorry` premise remains). |
 | `mdc split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]` | Submit the file as a decomposition (`no_premises` if none remains), with DESCRIPTION (at most 2000 characters) for its review. Its new premises become goals of the project, stated automatically. |
+| `mdc check FILE` | Have LeanGround check the file now on the project's base, the same Lean and Mathlib that judge submissions: `ok`, `diagnostics` (`severity`, `line`, `col`, `text`), `axioms` and `trust`, with the diagnostics also printed as `FILE:LINE:COL: …` lines. Nothing is recorded and no certificate is made, so a check is no submission; it renews your leases like the work commands. A file `mdc pull` did not write is checked in the project of `-p` / `MDC_PROJECT`. |
+| `mdc lemma QUERY... [--kind theorem\|definition\|all] [-n N]` | Library declarations of the project's base (Mathlib and results published to LeanGround) whose names contain one of the queries, exact and prefix matches first: `name`, `kind`, `type`, `trust` and the `matched_query`; at most N (default 20). Look a lemma up before citing it. |
 | `mdc done [FILE] [--spent N] [--outcome O] [--note TEXT]` | End the lease, reporting `submitted` if the file was submitted under it and `no_progress` otherwise (or O: `submitted`, `no_progress`, `execution_failed` or `released`), with N budget units spent (default 0). Without FILE, the one file holding your lease. `--note` keeps what you learned on the goal (at most 500 characters). |
 | `mdc next [--branch B] [-n N] [--claim]` | The free goals most worth working on, best first, at most N (default 10) ([What to do next](../../concepts/collaboration/#what-to-do-next)); `--claim` pulls the first. |
 | `mdc refute GOAL [pull flags]` | Register GOAL's negation if needed and pull it: proving that file with `mdc prove` refutes GOAL ([Refutation](../../concepts/collaboration/#refutation)). |
@@ -190,12 +192,14 @@ fail with `workspace_server_mismatch`.
 
 GOAL is a full GoalKey, a unique prefix of at least 8 hex digits, or the title or
 UUID of a converted node on the branch (`-p DATABASE/BRANCH`, or `--branch`).
+A goal without a node on the branch, such as the premise a split added, is also
+found by the name `mdc goals` shows (`ambiguous_goal` when two goals have it).
 
 ```sh
 mdc pull double_eq -p myproject/main      # writes 3f9a1c2e-double_eq.lean
 # edit the proof below the line "-- mdc: edit below this line"
 mdc split 3f9a1c2e-double_eq.lean -m "induction on n" --wait
-mdc pull 9d02b7c1 -p myproject/main       # a new subgoal, by key prefix
+mdc pull double_succ -p myproject/main    # the new subgoal, by name or key prefix
 mdc prove 9d02b7c1-double_succ.lean --wait
 mdc done 9d02b7c1-double_succ.lean
 mdc done                                  # the remaining lease
@@ -232,7 +236,12 @@ refused as outdated and a new submission is made. The same file submitted again
 reports the earlier submission (`replayed: true`); `--again` sends it anew.
 `--wait` waits for the worker and reports the certificate, its
 `certificate_state` and each new premise (`--timeout S`, default 600 seconds;
-`refute` and `branch new --attach` wait for their jobs with the same limit). A
+`refute` and `branch new --attach` wait for their jobs with the same limit).
+A submission LeanGround refuses reports `"status": "rejected"`, the `reason`
+(for example `verification_failed`) and `messages`: LeanGround's explanation,
+for a proof Lean's errors with their positions in the submitted source. `mdc`
+also prints the messages as plain text on standard error, to read them line by
+line; fix the file and submit it again. A
 decomposition is usually `proposed`: its new premises cannot be pulled with a
 lease (`inactive_goal`) until the project owner activates it
 ([Review](../../concepts/collaboration/#review)); `--no-claim` still writes their
@@ -247,12 +256,13 @@ it anyway.
 
 ### MCP
 
-`mdc mcp [--dir DIR]` serves `pull`, `prove`, `split`, `done` and `note` as tools
+`mdc mcp [--dir DIR]` serves `pull`, `prove`, `split`, `check`, `lemma`, `done` and `note` as tools
 of a [Model Context Protocol](https://modelcontextprotocol.io) server over
 stdio, for chat clients that call tools but have no shell or files. The tools
 take and return the goal file's **text**: `pull` returns `{file, text, …}`;
 `prove` and `split` take `{file, text}` (and `description` for `split`, `wait`
-for both); `done` takes `{file, spent, outcome, note}` and `note` takes `{text}`
+for both); `check` takes `{file, text}`; `lemma` takes `{queries, kind, limit}`;
+`done` takes `{file, spent, outcome, note}` and `note` takes `{text}`
 with `file` or `goal`. The server keeps the files and their `.mdc/` records in DIR (default:
 the current directory), so replays and leases work as on the command line. Run it
 with a delegated token and the project:

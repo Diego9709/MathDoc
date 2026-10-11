@@ -26,7 +26,10 @@ worth working on (`--claim` pulls it), `mdc refute GOAL` pulls a goal's negation
 to prove the goal false, and `mdc goal GOAL` shows a goal's statement, notes and
 decompositions
 ([Goals, review and routes](../workspace-commands/#goals-review-and-routes)).
-Chat clients without a shell get `pull`, `prove`, `split`, `done` and `note` as
+`mdc check FILE` has LeanGround check a draft without submitting it, and
+`mdc lemma QUERY` looks library declarations up by name; both go through
+MathDoc, so an agent needs no LeanGround credential. Chat clients without a
+shell get `pull`, `prove`, `split`, `check`, `lemma`, `done` and `note` as
 tools of `mdc mcp` ([MCP](../workspace-commands/#mcp)). The rest of this page is
 the HTTP flow underneath, for agents that call the API directly.
 

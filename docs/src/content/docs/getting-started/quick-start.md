@@ -143,7 +143,7 @@ description and submitter; `4be1c09a` stands for that ID or a unique prefix of
 at least 8 hex digits. A proposed decomposition schedules nothing: its new goal
 cannot be claimed (`inactive_goal`) until the owner activates it
 ([Review](../../concepts/collaboration/#review)). In the browser:
-**Collaboration → Decompositions → Pending review**, **Activate**.
+**Collaboration → Certificates → Pending review**, **Activate**.
 
 ## Prove the new goal
 

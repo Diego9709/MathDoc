@@ -39,7 +39,7 @@ status dimensions:
 - **Local check**: never performed (reported as `unverified` when a Lean block
   exists, `no_code` otherwise).
 - **LeanGround certification**: `not_submitted`, `insufficient`, `derivable`,
-  `certified`, `stale` or `rejected`. See
+  `certified`, `stale`, `rejected`, or `registered` for a definition node. See
   [Proofs with LeanGround](../../reference/proofs/#statuses).
 
 To check a proof, submit the node to LeanGround ([Proofs](../../reference/proofs/)).

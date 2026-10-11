@@ -157,7 +157,7 @@ setting it `active` (or `paused` or `retired`) with an optional comment of up to
 2000 characters. From the command line, `mdc review` lists what awaits review
 and `mdc review CERT --accept|--pause|--retire [-m COMMENT]` decides
 ([Goals, review and routes](../../reference/workspace-commands/#goals-review-and-routes));
-in the browser, **Decompositions** lists them under **Pending review** with each
+in the browser, **Certificates** lists them under **Pending review** with each
 premise's statement, the description given by the submitter, who submitted it
 and which branches' routes can need its goal, with **Activate** and **Retire**.
 The board keeps the last review on the certificate (`review`: who, when, state,
@@ -223,7 +223,7 @@ certificate as the branch's pick for its goal, so a branch's document is its
 route; converting the branch again sets those picks back. The owner, and any
 member who may write the branch (its editors), can change a pick with the `pick`
 command: `mdc pick GOAL CERT --branch B` (`auto` instead of CERT clears it), or
-in the browser **Use on this branch** and **Unpick** in Decompositions. A
+in the browser **Use on this branch** and **Unpick** in Certificates. A
 branch's route is part of its content, so it follows the branch's write access.
 `mdc branch new NAME --pick GOAL=CERT` opens a new route in one step: it forks the
 branch, attaches it to the project, waits for its conversion and then sets the
@@ -239,7 +239,7 @@ differ in how they split the root.
 ## Assembly
 
 When a branch's route closes, the owner **assembles** for that branch
-(**Assemble a route** in the browser's **Review** tab): MathDoc selects the route
+(**Assemble a route** in the browser's **Assemble & write back** tab): MathDoc selects the route
 from the branch's picks and asks LeanGround to combine the certificates into one
 source without premises, checked from scratch by `lean-worker`. One assembly runs
 at a time per project (`assembly_in_progress`); a route that does not close is

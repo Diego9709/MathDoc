@@ -124,6 +124,11 @@ earlier MathDoc versions. `branch` in the status names whose conversion is shown
 | `certified` | A complete certificate for its goal exists. |
 | `stale` | The node's Lean text, or a definition it uses, changed after submission. |
 | `rejected` | The converter or LeanGround refused the node; `reason` and `details` say why. |
+| `registered` | A definition node whose definitions LeanGround registered (`definition_ids`); a definition still waiting for its own dependencies shows `not_submitted`. |
+
+Nodes created by a writeback (premises and definitions that had no node) are
+recorded as converted on the branch as written, so they show their goal's status
+or `registered` at once.
 
 Nodes without a Lean block have no certification. The local-check dimension is
 always `unverified` or `no_code`: MathDoc performs no local checks. Statuses are
@@ -224,8 +229,9 @@ elsewhere, preferring certificates with fewer premises. The branch must be bound
 route's certificates and fails the run with `route_paused` if one is no longer
 active. LeanGround combines the route into one source without premises and
 checks it from scratch. The run (with its `branch`) becomes `certified`, or
-`failed` with a reason and a `retryable` flag; a job that fails for good fails
-its run the same way.
+`failed` with a reason, LeanGround's explanation as `details` when it gives
+one, and a `retryable` flag; a job that fails for good fails its run the same
+way.
 
 `accept` builds one writeback batch (`writeback-batch.v1`) for the run's branch,
 with that branch's converted nodes; no other branch is written:
@@ -270,7 +276,9 @@ one at a time per project. Their kinds are `provision` (creating the board,
 name}`) have a `result`; the others show their effect on the board.
 
 `GET …/jobs/JOB_ID` shows `status` (`queued`, `running`, `done`, `failed`),
-`tries`, `error` and `result`. A failure that may pass (LeanGround timed out or
+`tries`, `error`, `details` and `result`. `details` keeps LeanGround's
+explanation of a refusal, for a proof Lean's errors, cut at 8000 characters; a
+node LeanGround refuses keeps it as the binding's `details`. A failure that may pass (LeanGround timed out or
 unreachable, `leanground_timeout` or `leanground_unavailable`; a LeanGround or
 TerminusDB server error; a concurrent document write) is retried after 5 s,
 15 s, 45 s, …, at most 15 minutes apart, 8 tries in all; meanwhile the job is

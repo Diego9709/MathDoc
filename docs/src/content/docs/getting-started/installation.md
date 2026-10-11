@@ -74,6 +74,10 @@ the editor at `http://127.0.0.1:17843/`. The browser asks for an access token:
 enter one of the tokens from `MDC_ACTORS`. The worker is needed only for proof
 work; documents are served by the API alone.
 
+Ctrl-C or `SIGTERM` stops either process. The API finishes the requests in
+progress and stops its LaTeX renderers, then exits; the worker finishes its
+current job.
+
 ## The `mdc` CLI
 
 The CLI is `coordinator/dist/cli.js`, an HTTP client of the API. It needs the
