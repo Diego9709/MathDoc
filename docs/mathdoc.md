@@ -840,11 +840,32 @@ dsh 的沙箱又不限制读和网络，模型的训练数据也可能见过这�
   「Transaction retry count exceeded in internal operation」。[实测] 20 个并发建库中失败 1–6 个；阶段 6 起客户端对这个错误最多重发 3 次，同样条件下 60 个全部成功。
 - **LeanGround 安装脚本原地覆盖已签名的二进制**：macOS 会拒绝运行；本机靠「写新文件再改名」绕过，LeanGround 仓库本身没有修改。
 - **前端体积基线未更新**：`web/perf/baseline.json` 仍是移除本地 Lean 之前的数值。
-- **「证明模式」预设在 dsh 0.2.1-alpha.2 里不可用**（2026-10-10 发现）：[推断：读 dsh 源码与 web 配置] EvoHarness 的安装脚本把预设写进
-  `~/.dsh/.agent-presets/proof/`，这一版 dsh 不再读这个目录，预设要写成插件包（bundle）里的一行并装进配置；web 配置没有装这个包，
-  所以网页里选不到「证明模式」，EvoHarness 的证明工具也就不可用。另一条路是 `scripts/dsh_proof.sh` 用 `--patch` 给整个 dsh 服务加上证明工具，
-  但补丁里的模型通道还是返回 403 的旧网关，需要改成千问通道。第 2 轮先用普通预设开始。
-  另外，网页会话的工作目录是会话所属的「工作区」（在 dsh 网页侧栏「添加工作区」里选的目录），与 `dsh web` 在哪个目录启动无关，第 1 轮工作目录不对就是这个原因。
+- **dsh 网页会话的工作目录是会话所属的「工作区」**（2026-10-10 发现）：在 dsh 网页侧栏「添加工作区」里选的目录，与 `dsh web` 在哪个目录启动无关，
+  第 1 轮工作目录不对就是这个原因。（当时还推断「证明模式」预设在这一版 dsh 里选不到，第 2 轮的会话记录表明它可以选、`proof_open` 可用，推断有误。）
+- **拆解提交时，定义后面紧跟带文档注释的声明会被 LeanGround 拒绝**（2026-10-12 发现并修复，第 2 轮卡点）：[实测] agent 的拆解文件 `mdc check` 通过，
+  `mdc split` 却 5 次被拒，报错都是 `unexpected end of input; expected 'lemma'`。原因在 LeanGround 的声明切分（`fact_source.declarations`）：
+  一个声明从行首关键字延伸到下一个声明的关键字，注释先被抹成空白，所以下一个声明的文档注释 `/-- … -/` 落进前一个定义的范围；
+  随提交登记新定义时，这段以悬空文档注释结尾的源码单独编译即报上述错误（用 `/v1/check` 复现了同一条报错）。
+  `mdc check` 编译整个文件，所以测不出来。
+  **已修（2026-10-12，LeanGround 分支 `fact-source-doc-comments` 的 ca04431）**：声明多记两个位置——连同自己文档注释的起点 `lead`、不含下一个声明文档注释的终点 `stop`；
+  登记定义取 `[start, stop)`（定义 ID 不受文档注释影响），从认证源码删定义取 `[lead, stop)`。原有的 `end` 不变，组装与占位检查的输出不变。
+  修完后同一路径又暴露第二处：LeanGround 判定前提占位时按原样比较 `sorry` / `by sorry`，`:= by⏎  sorry` 认不出（`no_premises`），
+  而 `mdc` 折叠空白后当作前提；已改为折叠空白后比较。[实测] LeanGround 默认测试 134 个、事实层数据库与 Lean 测试 36 个通过；
+  新增的真实 Lean 回归测试在旧代码上分别以两种错误失败；部署（只覆盖安装副本里改动的 3 个文件、重启服务）后，
+  经 MathDoc 在临时数据库上提交「文档注释 + 新定义 + 换行 by sorry」的拆解，LeanGround 签发了条件认证。
+- **EvoHarness 攻坚的模型原先由 dsh 的环境决定**（2026-10-12，由下一条处理）：
+  EvoHarness 的 `proof_attack` 用 dsh 进程环境里的 `DSH_MODEL` 选模型，没有时回落到千问通道没有的 `gpt-5.6-sol`；dsh 只读 `~/.dsh/.env`
+  和启动目录的 `.env`，且不许其中写 `DSH_*`（[实测] 写了就启动失败）。
+- **dsh 与 EvoHarness 的配置各自独立**（2026-10-12，维护者要求）：
+  - EvoHarness 的端点 `EVOHARNESS_API_BASE`、密钥 `EVOHARNESS_API_KEY`、模型 `EVOHARNESS_MODEL` 和评测任务的 `ETP_JUDGE_URL` 只在 `~/.evo/.env`，
+    由 EvoHarness 自己读（新模块 `evoharness/user_env.py`，证明命令行与 `launch.start` 的入口先调用它；已 export 的变量优先；
+    `EVOHARNESS_MODEL` 在 EvoHarness 进程里改写 `DSH_MODEL`，所以 dsh 环境里带的 `DSH_MODEL` 不再决定 EvoHarness 的模型）。
+  - dsh 的 EvoHarness 插件不再从 dsh 的凭据库取密钥转给 EvoHarness（`cli.ts` 去掉 `modelCredential`，`proof.ts`、`start.ts` 不再转发）。
+  - dsh 只用自己的配置：千问通道的地址写回 dsh 配置，密钥名改为 `~/.dsh/.env` 里的 `QIANWEN_API_KEY`（同一账户的同一把密钥，dsh 存自己的一份）；
+    启动脚本 `~/imo-run/bin/dsh` 恢复为普通启动。
+  - [实测] 只有 dsh 自己配置时一次性对话答对 17×23；清空环境、只塞一个假的 `DSH_MODEL` 去运行证明命令行，`proof_attack` L1 证出核心 Lean 目标，
+    记录的模型是 `deepseek-v4.1-flash`；插件包 110 个测试、EvoHarness 1236 个测试通过（另有 8 个测试文件引用 `0b7bcfb` 删掉的模块，收集即失败，与本次无关）。
+  - 例外：EvoHarness 的旧启动脚本 `scripts/dsh_proof.sh` 仍按原设计让 dsh 会话用 EvoHarness 的密钥；研究模式 `evo_start` 的模型仍由插件配置或 dsh 环境的 `DSH_MODEL` 给出（研究模式未安装）。
 
 ## 4. 技术细节
 
