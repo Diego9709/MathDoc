@@ -19,6 +19,7 @@ Paths are under `web/src/`.
 | Settings | `components/ProjectSettings.svelte`: tabs for `ProofEnvironmentForm.svelte` and `LatexProjectForm.svelte`. |
 | Collaboration | `components/Collaboration.svelte` (four views: proof overview, task board, decompositions, review; the owner and members who can edit the branch pick its route), `LeanGroundSubmit.svelte`, `lib/coordination.ts` (API client; commands carry `If-Match` and a fresh `Idempotency-Key`). |
 | LaTeX | `components/LatexPreview.svelte`, `LatexImports.svelte`, `lib/latex.ts` (API), `lib/latex-session.svelte.ts` (draft requests and cancellation), `lib/latex-completion.ts`, `lib/latex-math.ts` (MathJax 4), `lib/latex-diagram.ts` (TikZ in a WebAssembly TeX worker, sanitized SVG). |
+| Text | `components/MarkdownPreview.svelte`, `lib/markdown.ts` (`marked` with math placeholders for `lib/latex-math.ts`, sanitized by DOMPurify). |
 | Shared | `lib/api.ts` (document API client; `409` and `412` are conflicts); `lib/project-path.ts` scopes branch API calls; `lib/unsaved.ts` tracks drafts and pending writes; `lib/monaco.ts`, `lib/monaco-scroll.ts` and `lib/editor-layout.ts` set up editors; `lib/theme.ts`, `lib/modal.ts`. |
 | Unit tests | `lib/*.test.ts` (Vitest, `npm test -w mdc-web`). |
 

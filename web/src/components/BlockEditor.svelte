@@ -20,6 +20,7 @@
   import type { PreparedLatexPreview } from "../lib/latex";
   import LatexImports from "./LatexImports.svelte";
   import LatexPreview from "./LatexPreview.svelte";
+  import MarkdownPreview from "./MarkdownPreview.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
   import { latexAutocomplete } from "../lib/latex-completion-widget";
 
@@ -30,6 +31,7 @@
     theme: Theme;
     active?: boolean;
     latexPreview?: boolean;
+    textPreview?: boolean;
     preparedLatex?: PreparedLatexPreview;
     onDeleted?: (node: NodeDetail, srctype: string) => void;
     onSaved?: (node: NodeDetail) => void;
@@ -37,7 +39,7 @@
     focusLabel?: string;
     onLatexNavigate?: (fnode: string, label: string) => void;
   }
-  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), preparedLatex, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
+  let { fnode, revision, block, theme, active = true, latexPreview = $bindable(false), textPreview = $bindable(false), preparedLatex, onDeleted, onSaved, onReady, focusLabel, onLatexNavigate }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let scroller: HTMLDivElement;
@@ -53,9 +55,11 @@
   let lastSavedDoc = "";
   let error: string | null = $state(null);
   let expanded = $state(true);
-  let previewing = $derived(block.srctype === "latex" && latexPreview);
+  let previewing = $derived(block.srctype === "latex" ? latexPreview : block.srctype === "text" && textPreview);
   let showPreview = $state(false);
   let latex = $state<LatexSession | null>(null);
+  /** A text block's current draft, which its Markdown preview shows. */
+  let markdown = $state("");
   let alive = false;
   let initializing = false;
   const draftId = Symbol("block draft");
@@ -92,6 +96,7 @@
       model.onDidChangeContent(() => {
         setDirty(model!.getValue() !== lastSavedDoc);
         latex?.schedule(model!.getValue());
+        if (block.srctype === "text") markdown = model!.getValue();
       });
       editorView.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => void save());
       editorView.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => void save());
@@ -110,7 +115,7 @@
     else if (ready) showPreview = false;
     if (!active || !expanded) return;
     if (!previewing) void ensureEditor();
-    else if (latex?.preview || latex?.error) onReady?.();
+    else if (!latex || latex.preview || latex.error) onReady?.();
   });
 
   $effect(() => { const next = theme; if (ready) void setMonacoTheme(next); });
@@ -193,6 +198,10 @@
   }
 
   function toggleExpand() { expanded = !expanded; }
+  function togglePreview() {
+    if (block.srctype === "latex") latexPreview = !latexPreview;
+    else textPreview = !textPreview;
+  }
 
   onDestroy(() => {
     alive = false;
@@ -214,6 +223,7 @@
     lastSavedDoc = nextContent;
     if (editorView && !dirty && editorView.getValue() !== nextContent) editorView.setValue(nextContent);
     if (!editorView && latex && latex.source !== nextContent) latex.schedule(nextContent);
+    if (!editorView) markdown = nextContent;
     setDirty(editorView !== null && editorView.getValue() !== lastSavedDoc);
   });
 </script>
@@ -227,15 +237,16 @@
     {#if saving}<span class="saving">saving...</span>{/if}
     {#if deleting}<span class="saving">deleting...</span>{/if}
     {#if error}<span class="error" title={error}><AlertTriangle size={14} strokeWidth={1.9} /></span>{/if}
-    {#if block.srctype === "latex"}
+    {#if block.srctype === "latex" || block.srctype === "text"}
+      {@const language = block.srctype === "latex" ? "LaTeX" : "Markdown"}
       <button
         class="preview-toggle"
         class:active={previewing}
-        onclick={() => { latexPreview = !latexPreview; }}
+        onclick={togglePreview}
         disabled={!expanded}
         aria-pressed={previewing}
-        title={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
-        aria-label={previewing ? "Return to LaTeX editor" : "Render LaTeX preview"}
+        title={previewing ? `Return to ${language} editor` : `Render ${language} preview`}
+        aria-label={previewing ? `Return to ${language} editor` : `Render ${language} preview`}
       >
         {#if previewing}<Code2 size={14} strokeWidth={1.8} /><span class="btn-label">Edit</span>
         {:else}<Eye size={14} strokeWidth={1.8} /><span class="btn-label">Preview</span>{/if}
@@ -252,7 +263,9 @@
     <div class="editor-size"><div class="editor-host" bind:this={host}></div></div>
   </div>
   {#if showPreview && expanded}
-    {#if latex?.preview}
+    {#if block.srctype === "text"}
+      <MarkdownPreview source={markdown} />
+    {:else if latex?.preview}
       <LatexPreview html={latex.preview.html} labels={latex.preview.labels} {fnode} {focusLabel} onNavigate={onLatexNavigate} />
     {:else if !latex?.error}
       <div class="preview-loading" aria-busy="true">Preparing preview...</div>

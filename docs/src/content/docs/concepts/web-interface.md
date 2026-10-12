@@ -55,7 +55,11 @@ All block types use Monaco editors with the same controls (**Save**, also
 Ctrl/⌘+S; collapse; **Delete block**), fonts and light/dark themes; **Add source
 block** adds a missing type. Lean blocks are plain source editors with syntax
 highlighting. LaTeX blocks add Edit/Preview, reference and citation completion
-and clickable cross-node references ([LaTeX](../latex/)).
+and clickable cross-node references ([LaTeX](../latex/)). Text blocks are
+GitHub-flavoured Markdown and add Edit/Preview too: math in `$…$`, `\(…\)`,
+`$$…$$` or `\[…\]` is typeset with MathJax, raw HTML is sanitized, and links
+open in a new tab. As for LaTeX, the preview shows the unsaved draft and
+switching nodes keeps the mode.
 
 ## Node status
 

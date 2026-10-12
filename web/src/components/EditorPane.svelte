@@ -42,6 +42,8 @@
   let BlockEditorComponent = $state<typeof import("./BlockEditor.svelte").default | null>(null);
   let blockEditorPromise: Promise<typeof import("./BlockEditor.svelte").default> | null = null;
   let editorLoadError: string | null = $state(null);
+  /** Like LaTeX's mode, shared by the page's text blocks across nodes. */
+  let textPreview = $state(false);
   let alive = true;
 
   function applyBlockUpdate(updated: NodeDetail, graphChanged = false) {
@@ -245,6 +247,7 @@
             {theme}
             {active}
             bind:latexPreview
+            bind:textPreview
             preparedLatex={load.kind === "ready" ? load.latexPreview : undefined}
             focusLabel={latexTarget?.fnode === node.fnode ? latexTarget.label : undefined}
             {onLatexNavigate}

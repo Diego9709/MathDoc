@@ -647,6 +647,52 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
   } finally { await browser.close(); }
 });
 
+await test('text blocks preview sanitized Markdown with math, from the draft and across nodes', {timeout: 60000}, async () => {
+  const browser = await launchBrowser();
+  const second = {fnode: randomUUID(), title: 'Second text', module: 'Lib.SecondText', depens: [], blocks: [
+    {srctype: 'text', content: '## Next\n\nKeeps the mode.\n'},
+  ]};
+  const first = {fnode: randomUUID(), title: 'Markdown text', module: 'Lib.MarkdownText', depens: [second.fnode], blocks: [
+    {srctype: 'text', content: '# Claim\n\nFor $a_1 * b_2$, see [docs](https://example.com) and [here](#x).\n\n$$\n\\sum_i x_i\n$$\n\n<img src="data:," onerror="window.__xss = 1">\n'},
+  ]};
+  try {
+    await fixture(browser, async ({page, url, cli}) => {
+      await page.goto(`${url}/?shared#ref=${first.fnode}`);
+      let block = page.locator('[data-srctype="text"]');
+      await block.locator('.editor-scroll:not(.pending)').waitFor();
+      await block.getByRole('button', {name: 'Render Markdown preview'}).click();
+      let preview = block.locator('.markdown-preview');
+      await preview.locator('h1', {hasText: 'Claim'}).waitFor();
+      await preview.locator('.latex-math[data-tex="a_1 * b_2"] mjx-container').waitFor();
+      await preview.locator('.latex-math[data-display="true"] mjx-container').waitFor();
+      assert.equal(await preview.locator('.latex-math[data-display="true"]').getAttribute('data-tex'), '\\sum_i x_i');
+      assert.equal(await preview.locator('mjx-merror, .latex-error, em').count(), 0);
+      assert.equal(await preview.getByRole('link', {name: 'docs'}).getAttribute('target'), '_blank');
+      assert.equal(await preview.locator('a', {hasText: 'here'}).getAttribute('href'), null);
+      assert.equal(await preview.locator('img').getAttribute('onerror'), null);
+      assert.equal(await page.evaluate(() => window.__xss), undefined);
+
+      // The mode is kept for the page: the next node opens straight in Preview.
+      await page.getByRole('complementary', {name: 'Dependencies'}).getByRole('button', {name: /^Second text/}).click();
+      await title(page, 'Second text');
+      block = page.locator('[data-srctype="text"]');
+      preview = block.locator('.markdown-preview');
+      await preview.locator('h2', {hasText: 'Next'}).waitFor();
+
+      // Preview shows the unsaved draft; only Save writes it.
+      await block.getByRole('button', {name: 'Return to Markdown editor'}).click();
+      await block.getByRole('textbox', {name: /^text source/}).press(documentEndKey);
+      await page.keyboard.insertText('\nA **draft**.');
+      await block.getByRole('button', {name: 'Render Markdown preview'}).click();
+      await preview.locator('strong', {hasText: 'draft'}).waitFor();
+      await block.getByText('Unsaved', {exact: true}).waitFor();
+      await block.getByRole('button', {name: 'Save', exact: true}).click();
+      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+      assert.equal(JSON.parse((await cli('show', second.fnode)).stdout).blocks[0].content, '## Next\n\nKeeps the mode.\n\nA **draft**.');
+    }, [second, first]);
+  } finally { await browser.close(); }
+});
+
 await test('LaTeX macros, scoped completion, citations and draft previews', {timeout: 90000}, async () => {
   const browser = await launchBrowser();
   try {
