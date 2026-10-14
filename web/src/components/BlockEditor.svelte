@@ -283,7 +283,8 @@
 <style>
   .editor-scroll { min-height:0; height:clamp(10rem, var(--source-height, 10rem), 100cqh); overflow:auto; }
   .editor-scroll.collapsed { height:0; visibility:hidden; overflow:hidden; }
-  .editor-scroll.pending { visibility:hidden; }
+  /* Safari can omit source glyphs inserted into a visibility:hidden scroller. */
+  .editor-scroll.pending { opacity:0; }
   .editor-size { min-width:100%; min-height:100%; }
   .editor-host { position:sticky; top:0; left:0; overflow:hidden; }
   .preview-loading {
