@@ -98,6 +98,35 @@ export interface Goal {
   notes?: Note[];
   /** Set when a complete proof of the goal's negation exists (§2.7.5): the goal is false. */
   refuted?: { certificate: string; at?: number };
+  /** Module projects: where the goal is stated (docs/module-certification.md §5.4). */
+  module?: ModuleStatement;
+}
+/**
+ * A goal of a module project is a constant of some Lean files: the root's statement in the root
+ * node's file, a premise's placeholder in the decomposition that introduced it. Proofs restate
+ * it; LeanGround connects them to its own statement source by the kernel, so this is the text
+ * goal drafts start from, never what decides a proof.
+ */
+export interface ModuleStatement {
+  /** The statement constant's full name. */
+  const: string;
+  /** Shared modules the stating files import (with their dependencies, LeanGround resolves). */
+  shared: string[];
+  /** The root: the document node holding the statement file, with the file's path. */
+  node?: string;
+  path?: string;
+  /** A premise: the decomposition certificate whose placeholder states it. */
+  certificate?: string;
+}
+/** A shared module of a module project: files registered once, imported by statements. */
+export interface SharedModule {
+  id: string;
+  /** Lean module names, as `A.B`. */
+  modules: string[];
+  /** The document nodes holding its files (the root's dependencies), when it came from one. */
+  nodes?: string[];
+  /** The decomposition that registered it (`mdc split --shared`). */
+  certificate?: string;
 }
 /** What someone learned working on a goal: what was tried, where it got stuck. */
 export interface Note {
@@ -235,6 +264,10 @@ export interface Board {
   review?: "required" | "none";
   /** Negation goal → the goal it refutes once completely proved (§2.7.5). */
   negations?: Record<string, string>;
+  /** Module projects (docs/module-certification.md §5.4); absent: declarations. */
+  mode?: "modules";
+  /** Module projects: the shared modules goals are stated with, by ID. */
+  shared_modules?: Record<string, SharedModule>;
 }
 export interface Accepted {
   certification_id: string;
@@ -335,6 +368,7 @@ export function newProjectBoard(
     minimum_trust: Trust;
     environment_id: string;
     replaces_environment_id?: string;
+    mode?: "declarations" | "modules";
   },
 ): Board {
   const b: Board = {
@@ -369,6 +403,9 @@ export function newProjectBoard(
     },
     branches: {},
   };
+  // docs/module-certification.md §6 decision 4: decompositions take effect at once; the
+  // owner can pause or retire one afterwards.
+  if (env.mode === "modules") Object.assign(b, { mode: "modules", review: "none" });
   b.branches![input.document.branch] = newBranchState(b, input.document.branch);
   return b;
 }
@@ -873,6 +910,13 @@ export function expireLease(a: Attempt, t: Task) {
 const short = z.string().min(1).max(200);
 const noteKey = z.object({ actor: short, at: z.number().int().nonnegative() }).strict();
 const ttl = z.number().int().min(30).max(3600).default(300);
+/** A contribution of a module project: Lean files by path, e.g. `Work/Main.lean` (LeanGround's limits). */
+export const MODULE_PATH = /^(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.lean$/;
+export const moduleFiles = z
+  .record(z.string().regex(MODULE_PATH).max(500), z.string().max(2_000_000))
+  .refine((f) => Object.keys(f).length >= 1 && Object.keys(f).length <= 64, {
+    message: "1 to 64 files",
+  });
 export const commandSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -994,6 +1038,19 @@ export const commandSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("submit_modules"),
+      goal: short,
+      files: moduleFiles,
+      root: short,
+      // Shared modules the files import; `new_shared` files are registered as one more first.
+      shared: z.array(short).max(100).default([]),
+      new_shared: moduleFiles.optional(),
+      mode: z.enum(["leaf", "sketch"]),
+      description: z.string().trim().min(1).max(2000).optional(),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("submit_node"),
       node: z.string().uuid(),
       branch: branchName.optional(),
@@ -1025,6 +1082,7 @@ export const UNCHECKED = new Set<Command["type"]>([
   "heartbeat",
   "finish",
   "submit",
+  "submit_modules",
   "resolve",
   "import",
   "sync",
@@ -1082,6 +1140,7 @@ export function command(
       };
     }
     case "resolve":
+      requireThat(b.mode !== "modules", "not_in_module_mode");
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       return {
         result: { queued: true },
@@ -1128,7 +1187,9 @@ export function command(
       return { result: { deleted: true } };
     }
     case "negate": {
-      // §2.7.5: the negation becomes a goal of its own; proving it refutes this one.
+      // §2.7.5: the negation becomes a goal of its own; proving it refutes this one. A module
+      // goal has no proposition text to negate (docs/module-certification.md §5.4).
+      requireThat(b.mode !== "modules", "not_in_module_mode");
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       const g = b.goals[c.goal];
       const known = Object.entries(b.negations ?? {}).find(
@@ -1230,6 +1291,8 @@ export function command(
         job: { kind: "import", payload: { certificate: c.certificate } },
       };
     case "submit":
+      // A module project takes whole files (`submit_modules`).
+      requireThat(b.mode !== "modules", "not_in_module_mode");
       // Components and modes are paired: sketches only through lean-worker-sketch.
       requireThat(
         (c.component === "lean-worker-sketch") === (c.mode === "sketch"),
@@ -1247,7 +1310,19 @@ export function command(
         result: { queued: true },
         job: { kind: "submit", payload: { ...c } },
       };
+    case "submit_modules":
+      requireThat(b.mode === "modules", "not_a_module_project");
+      requireThat(
+        Object.hasOwn(b.goals, c.goal) && b.goals[c.goal].identity,
+        "goal_identity_unavailable",
+      );
+      return {
+        result: { queued: true },
+        job: { kind: "submit_modules", payload: { ...c } },
+      };
     case "submit_node": {
+      // A module project's nodes are files; contributions come from `mdc prove` / `mdc split`.
+      requireThat(b.mode !== "modules", "not_in_module_mode");
       const branch = attached(b, c.branch);
       requireThat(branch.request.bound, "branch_not_bound");
       const n = Object.hasOwn(branch.nodes, c.node)
@@ -1308,7 +1383,8 @@ export function command(
       const run: Run = {
         id,
         route: selectRoute(b, picks),
-        component: c.component,
+        // Module certificates are assembled at the constant level by their own component.
+        component: b.mode === "modules" ? "lean-modules" : c.component,
         status: "queued",
         ...(b.project ? { branch: c.branch } : {}),
       };

@@ -254,6 +254,21 @@ reserving the task for you: a correct proof submitted later is still recorded.
 If someone else holds the task, `pull` names them; `--no-claim` lets you work on
 it anyway.
 
+### Module projects
+
+In a [module project](../proofs/#module-projects) a goal is a directory of Lean files:
+
+| Command | What it does |
+| --- | --- |
+| `mdc pull GOAL [-o DIR] [--ttl S] [--no-claim]` | Claim the goal and write DIR (default `<first 8 digits of the GoalKey>-<name>`): the goal's statement files to start from (the root's statement copied to `Work/Main.lean`; a premise's decomposition as it was submitted), the shared modules they import at their module paths and read-only, and `GOAL.md` with the goal, the rules and the latest notes. |
+| `mdc check DIR [--root NAME]` | LeanGround compiles the directory's files and checks them as a contribution to the goal: `ok`, `compiled`, `premises`, `axioms`, and Lean's messages and the checker's findings as lines. Nothing is recorded. |
+| `mdc prove DIR [--root NAME] [--wait]` | Submit every `.lean` file of DIR except the shared modules as a complete proof. With premises left, LeanGround refuses it before recording anything (`has_premises`). |
+| `mdc split DIR -m TEXT [--shared FILE]… [--root NAME] [--wait]` | Submit them as a decomposition. Each `--shared FILE` holds definitions the new goals' statements use; those files are registered as a shared module first. |
+
+The root theorem is the goal's statement constant unless `--root` names another one. A shared module
+that was changed is refused (`shared_module_modified`), and so are paths that are not Lean identifiers
+(`invalid_path`). `done`, `note`, leases and replays work as for goal files.
+
 ### MCP
 
 `mdc mcp [--dir DIR]` serves `pull`, `prove`, `split`, `check`, `lemma`, `done` and `note` as tools
@@ -263,7 +278,10 @@ take and return the goal file's **text**: `pull` returns `{file, text, …}`;
 `prove` and `split` take `{file, text}` (and `description` for `split`, `wait`
 for both); `check` takes `{file, text}`; `lemma` takes `{queries, kind, limit}`;
 `done` takes `{file, spent, outcome, note}` and `note` takes `{text}`
-with `file` or `goal`. The server keeps the files and their `.mdc/` records in DIR (default:
+with `file` or `goal`. In a module project `pull` returns `{directory, files, …}` with the text of every
+file of the directory, and `prove`, `split` and `check` take `file` (the directory) and `files` (path →
+text, written before the call), with `root`, and `shared` (paths) for `split`.
+The server keeps the files and their `.mdc/` records in DIR (default:
 the current directory), so replays and leases work as on the command line. Run it
 with a delegated token and the project:
 

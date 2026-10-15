@@ -18,6 +18,13 @@ import {
   type CertificateRecord,
   type DefinitionRecord,
 } from "./writeback.js";
+import {
+  buildModuleBatch,
+  routeSharedModules,
+  type ModuleCertificateRecord,
+  type SharedRecord,
+} from "./modules.js";
+import { goalName } from "./goal-view.js";
 
 /** The route's certificate sources and the definitions they need that no node holds yet. */
 export async function batchInputs(
@@ -51,6 +58,31 @@ export async function batchInputs(
     pending.push(...((d.deps as string[] | undefined) ?? []));
   }
   return { certificates, definitions };
+}
+
+/** A module route's certificates with their files, and the shared modules no document node holds. */
+export async function moduleBatchInputs(lean: LeanGround, b: Board, run: Run) {
+  const certificates = new Map<string, ModuleCertificateRecord>();
+  for (const step of run.route.steps) {
+    const cert = await lean.fact("read", {
+      kind: "certificate",
+      id: step.certificate_id,
+      source: true,
+    });
+    checkFact(b, cert);
+    certificates.set(step.certificate_id, cert as ModuleCertificateRecord);
+  }
+  const shared = new Map<string, SharedRecord>();
+  for (const id of routeSharedModules(b, certificates))
+    shared.set(
+      id,
+      (await lean.fact("read", {
+        kind: "module",
+        id,
+        source: true,
+      })) as SharedRecord,
+    );
+  return { certificates, shared };
 }
 
 const leanText = (n: Node | undefined) =>
@@ -91,21 +123,25 @@ export async function previewWriteback(
   checkFact(b, final);
   const assembled = typeof final.source === "string" ? final.source : null;
   const snap = await load(branch.request.database, branch.request.branch);
-  const { certificates, definitions } = await batchInputs(
-    lean,
-    b,
-    run,
-    branch.nodes,
-  );
   try {
-    const built = buildBatch({
-      request: branch.request,
-      nodes: branch.nodes,
-      run,
-      snapshot: snap,
-      certificates,
-      definitions,
-    });
+    const built =
+      b.mode === "modules"
+        ? buildModuleBatch({
+            board: b,
+            request: branch.request,
+            nodes: branch.nodes,
+            run,
+            snapshot: snap,
+            ...(await moduleBatchInputs(lean, b, run)),
+            label: (goal) => goalName(b, goal),
+          })
+        : buildBatch({
+            request: branch.request,
+            nodes: branch.nodes,
+            run,
+            snapshot: snap,
+            ...(await batchInputs(lean, b, run, branch.nodes)),
+          });
     const changed = new Map(built.changes.map((n) => [n.fnode, n]));
     const changes: PlannedChange[] = (
       built.writeback.contract?.operations ?? []

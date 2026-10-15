@@ -38,9 +38,10 @@ export function routeReach(b: Board): Map<string, Set<string>> {
 
 /** A readable name: a node proving the goal, its declared name, else its statement. */
 export function goalName(b: Board, goal: string): string {
+  // A module project's contribution files are named after their paths, not their goal.
   for (const branch of Object.values(b.branches ?? {}))
     for (const n of Object.values(branch.nodes))
-      if (n.goal === goal) return n.title;
+      if (n.goal === goal && !n.file) return n.title;
   const g = b.goals[goal];
   return g?.declaration?.name ?? (g?.statement || `${goal.slice(0, 10)}…`);
 }

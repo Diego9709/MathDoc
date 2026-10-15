@@ -53,7 +53,7 @@ export const batchId = (run: Run) =>
   `wb-${createHash("sha256").update(`${run.id}\0${run.certification_id}`).digest("hex").slice(0, 32)}`;
 
 /** Deterministic UUID for a node created by a batch. */
-function derivedUuid(batch: string, key: string): string {
+export function derivedUuid(batch: string, key: string): string {
   const h = createHash("sha256").update(`${batch}\0${key}`).digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${"89ab"[parseInt(h[16], 16) % 4]}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }

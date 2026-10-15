@@ -4,11 +4,15 @@ import { ApiError, fetchJson } from "./api";
 import { projectName } from "./project-path";
 
 export type Trust = "claimed" | "audited" | "trusted";
+/** `modules`: every Lean node is a whole Lean file (docs/module-certification.md §5.4). */
+export type ProofMode = "declarations" | "modules";
 export interface EnvironmentInput {
   base_key: number;
   context: Record<string, string[]>;
   options: Record<string, string | number | boolean>;
   minimum_trust: Trust;
+  /** Absent in environments stored before modes existed: declarations. */
+  mode?: ProofMode;
 }
 export interface Environment extends EnvironmentInput {
   base: Record<string, unknown>;
@@ -25,6 +29,8 @@ export interface Goal {
   notes?: Note[];
   /** Set once a complete proof of the goal's negation exists (§2.7.5). */
   refuted?: { certificate: string; at?: number };
+  /** Module projects: the constant stating the goal, in the root node or a decomposition. */
+  module?: { const: string; shared: string[]; node?: string; path?: string; certificate?: string };
 }
 /** `proposed` decompositions wait for the owner's review and schedule nothing (§2.7.3). */
 export type FactState = "proposed" | "active" | "paused" | "retired" | "refuted";
@@ -52,6 +58,8 @@ export interface NodeBinding {
   state: "open" | "submitted" | "registered" | "rejected" | "pending" | "certified";
   goal?: string; conclusion?: string; premises?: string[]; definition_ids?: string[];
   certificate?: string; reason?: string; details?: string;
+  /** Module projects: a file a writeback created (docs/module-certification.md §5.4). */
+  file?: { path: string; certificate?: string; root?: boolean; shared?: string };
 }
 export interface Writeback {
   batch_id: string; run: string; status: "committed" | "aborted"; version?: string;
@@ -95,6 +103,9 @@ export interface Board {
   project?: { database: string; environment_id: string; root_node: string; superseded?: boolean };
   /** Project boards: whether new sketches wait for review (absent: they do). */
   review?: "required" | "none";
+  /** Module projects: Lean nodes are whole files; contributions are sets of files. */
+  mode?: "modules";
+  shared_modules?: Record<string, { id: string; modules: string[]; nodes?: string[]; certificate?: string }>;
   /** Negation goal → the goal it refutes once proved (§2.7.5). */
   negations?: Record<string, string>;
   /** Branches the reader can read. */
@@ -106,7 +117,7 @@ export interface Board {
 }
 type CommandReply = { revision: number; result: unknown; job?: string };
 /** Commands the coordinator checks against the current board (coordinator/src/domain.ts UNCHECKED). */
-const UNCHECKED = new Set(["claim", "heartbeat", "finish", "submit", "resolve", "import", "sync", "submit_node", "note", "negate"]);
+const UNCHECKED = new Set(["claim", "heartbeat", "finish", "submit", "submit_modules", "resolve", "import", "sync", "submit_node", "note", "negate"]);
 export type Command =
   | { type: "sync" }
   | { type: "claim"; task: string; allocation: number; ttl: number }

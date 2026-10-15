@@ -37,31 +37,54 @@ CREATE TABLE IF NOT EXISTS mdc_project_environment(database text PRIMARY KEY, bo
 `;
 
 const optionValue = z.union([z.string(), z.number(), z.boolean()]);
+/**
+ * How a project certifies (docs/module-certification.md §5.4): `declarations` converts nodes
+ * declaration by declaration (§4.7); `modules` takes every Lean node as a whole Lean file, so
+ * each file brings its own `open`, `set_option` and the like and the environment has none.
+ */
+export const proofModeSchema = z.enum(["declarations", "modules"]);
+export type ProofMode = z.infer<typeof proofModeSchema>;
 export const environmentInputSchema = z
   .object({
     base_key: z.number().int().nonnegative(),
     context: contextSchema.default({}),
     options: z.record(optionValue).default({}),
     minimum_trust: trustSchema.default("audited"),
+    mode: proofModeSchema.default("declarations"),
   })
-  .strict();
+  .strict()
+  .refine(
+    (e) =>
+      e.mode !== "modules" ||
+      (!Object.keys(e.context).length && !Object.keys(e.options).length),
+    {
+      message:
+        "a modules environment has no context or options: every file states its own",
+    },
+  );
 export type EnvironmentInput = z.infer<typeof environmentInputSchema>;
-export interface Environment extends EnvironmentInput {
+export interface Environment extends Omit<EnvironmentInput, "mode"> {
+  /** Absent in environments stored before modes existed: declarations. */
+  mode?: ProofMode;
   base: z.infer<typeof baseRefSchema>;
-  /** contract environmentIdentity: BaseRef, context, options, minimum_trust only. */
+  /**
+   * contract environmentIdentity (BaseRef, context, options, minimum_trust), and the mode
+   * when it is `modules`, so environments without one keep their identity.
+   */
   environment_id: string;
   replaces_environment_id?: string;
   updated_by: string;
 }
 
 export function environmentId(
-  e: Pick<Environment, "base" | "context" | "options" | "minimum_trust">,
+  e: Pick<Environment, "base" | "context" | "options" | "minimum_trust" | "mode">,
 ): string {
   return contractDigest({
     base: e.base,
     context: e.context,
     options: e.options,
     minimum_trust: e.minimum_trust,
+    ...(e.mode === "modules" ? { mode: e.mode } : {}),
   });
 }
 
@@ -141,6 +164,12 @@ export interface NodeBinding {
   binding?: unknown;
   reason?: string;
   details?: string;
+  /**
+   * Module projects: a file a writeback created, with its path: a file of the contribution
+   * `certificate` (`root` marks the one declaring its root theorem), or of the shared module
+   * `shared` a decomposition registered. It is no statement file of the conversion.
+   */
+  file?: { path: string; certificate?: string; root?: boolean; shared?: string };
 }
 
 export interface ProofRequest {

@@ -13,7 +13,20 @@ import { goalName } from "../goal-view.js";
 import { Client, MdcError } from "./client.js";
 import { parse, render, sha256 } from "./goal-file.js";
 import * as ws from "./workspace.js";
-import type { FileRecord, Lease, Submission, Workspace } from "./workspace.js";
+import type {
+  AnyRecord,
+  FileRecord,
+  Lease,
+  ModuleRecord,
+  Submission,
+  Workspace,
+} from "./workspace.js";
+import type { ModuleDraft } from "../modules.js";
+import {
+  contribution,
+  messages as leanMessages,
+  writeGoalDir,
+} from "./module-dir.js";
 
 export interface VerbContext {
   client: Client;
@@ -23,6 +36,8 @@ export interface VerbContext {
   /** DATABASE/BRANCH from -p or MDC_PROJECT. */
   project?: string;
   flag(name: string): string | undefined;
+  /** Every value of a flag given more than once, e.g. `--shared A.lean --shared B.lean`. */
+  all(name: string): string[];
   has(name: string): boolean;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -241,10 +256,22 @@ export async function pull(ctx: VerbContext, ref: string | undefined) {
   const goal = await goalOf(ctx.client, board, ref, database, branch);
   const params = new URLSearchParams({ branch });
   if (ctx.flag("--with")) params.set("with", ctx.flag("--with")!);
-  const draft: GoalDraft = await ctx.client.request(
+  const fetched: GoalDraft | ModuleDraft = await ctx.client.request(
     "GET",
     projectPath(board.id, `/goals/${goal}/draft?${params}`),
   );
+  if ("format" in fetched && fetched.format === "mdc-module-draft/1")
+    return pullDirectory(
+      ctx,
+      w,
+      leases,
+      fetched,
+      database,
+      branch,
+      ttl,
+      allocation,
+    );
+  const draft = fetched as GoalDraft;
   const rendered = render(draft);
   const file = resolve(
     ctx.cwd,
@@ -293,7 +320,69 @@ export async function pull(ctx: VerbContext, ref: string | undefined) {
   };
 }
 
-/** The record of a pulled file. */
+/**
+ * A module goal (docs/module-certification.md §5.4): a directory with the goal's statement files
+ * as the starting contribution and the shared modules they import.
+ */
+async function pullDirectory(
+  ctx: VerbContext,
+  w: Workspace,
+  leases: Awaited<ReturnType<typeof renew>>,
+  draft: ModuleDraft,
+  database: string,
+  branch: string,
+  ttl: number,
+  allocation: number,
+) {
+  const name = draft.statement.const.split(".").at(-1)!.replace(/[^\w]/g, "_");
+  const dir = resolve(
+    ctx.cwd,
+    ctx.flag("--output") ?? `${draft.goal.slice(0, 8)}-${name}`,
+  );
+  const rel = ws.relativeFile(w, dir);
+  if (await ws.read(w, rel))
+    throw new MdcError("file_exists", `${rel} was pulled already`);
+  const lease = ctx.has("--no-claim")
+    ? null
+    : await claim(ctx, draft as unknown as GoalDraft, ttl, allocation);
+  const start = await writeGoalDir(dir, draft);
+  const record: ModuleRecord = {
+    format: "mdc-module-dir-record/1",
+    file: rel,
+    project: draft.project,
+    database,
+    branch,
+    goal: draft.goal,
+    environment_id: draft.environment_id,
+    root: draft.statement.const,
+    statement: {
+      from: draft.statement.from,
+      ...(draft.statement.certificate
+        ? { certificate: draft.statement.certificate }
+        : {}),
+      paths: start.statement,
+    },
+    shared: { ids: draft.shared.map((s) => s.id), files: start.shared },
+    pulled_revision: draft.revision,
+    lease,
+    submissions: [],
+  };
+  await ws.write(w, record);
+  return {
+    directory: rel,
+    project: draft.project,
+    goal: draft.goal,
+    status: draft.status,
+    root: draft.statement.const,
+    statement_from: draft.statement.from,
+    files: start.statement,
+    shared: Object.keys(start.shared),
+    lease,
+    ...leases,
+  };
+}
+
+/** The record of a pulled file or directory. */
 export async function pulled(ctx: VerbContext, file: string) {
   const abs = resolve(ctx.cwd, file);
   const w = await workspace(ctx, dirname(abs));
@@ -308,7 +397,7 @@ export async function pulled(ctx: VerbContext, file: string) {
 async function follow(
   ctx: VerbContext,
   w: Workspace,
-  record: FileRecord,
+  record: AnyRecord,
   s: Submission,
   wait: boolean,
 ) {
@@ -347,7 +436,7 @@ async function follow(
 async function send(
   ctx: VerbContext,
   w: Workspace,
-  record: FileRecord,
+  record: AnyRecord,
   request: Record<string, unknown>,
   hash: string,
   intent: Submission["intent"],
@@ -418,9 +507,20 @@ export async function submit(
   const description = ctx.flag("--message");
   if (intent === "split" && !description)
     throw new MdcError("usage", "mdc split FILE -m DESCRIPTION");
-  const { w, record } = await pulled(ctx, file);
+  const { w, record: pulledRecord } = await pulled(ctx, file);
   // Working on a file, even one still refused locally, keeps its lease; --dry-run stays offline.
   const leases = ctx.has("--dry-run") ? undefined : await renew(ctx, w);
+  if (pulledRecord.format === "mdc-module-dir-record/1")
+    return submitDirectory(
+      ctx,
+      w,
+      pulledRecord,
+      file,
+      intent,
+      description,
+      leases,
+    );
+  const record = pulledRecord;
   const parsed = parse(await readFile(resolve(ctx.cwd, file), "utf8"), record);
   if (parsed.root_is_sorry)
     throw new MdcError("root_is_sorry", `${record.root} is still sorry`);
@@ -454,6 +554,21 @@ export async function submit(
     new_definitions: parsed.new_definitions,
   };
   if (ctx.has("--dry-run")) return { ...summary, source: parsed.source };
+  return {
+    ...summary,
+    ...(await deliver(ctx, w, record, request, intent)),
+    ...leases,
+  };
+}
+
+/** Send a submission once (§4.11 replay) and follow its job; what the verb reports about it. */
+async function deliver(
+  ctx: VerbContext,
+  w: Workspace,
+  record: AnyRecord,
+  request: Record<string, unknown>,
+  intent: "prove" | "split",
+) {
   const fresh = (await ws.read(w, record.file))!;
   const hash = sha256(JSON.stringify(request));
   const last = fresh.submissions
@@ -480,7 +595,6 @@ export async function submit(
     );
   await follow(ctx, w, fresh, s, ctx.has("--wait"));
   return {
-    ...summary,
     status: s.status,
     replayed,
     key: s.key,
@@ -490,13 +604,63 @@ export async function submit(
     ...(s.premises ? { premise_goals: s.premises } : {}),
     ...(s.reason ? { reason: s.reason } : {}),
     ...(s.messages ? { messages: s.messages } : {}),
+  };
+}
+
+/**
+ * `mdc prove DIR` / `mdc split DIR`: the directory's files as one contribution. Whether it is a
+ * complete proof or a decomposition is LeanGround's finding (its placeholders), checked before
+ * anything is recorded: `has_premises` / `no_premises` as with goal files.
+ */
+async function submitDirectory(
+  ctx: VerbContext,
+  w: Workspace,
+  record: ModuleRecord,
+  dir: string,
+  intent: "prove" | "split",
+  description: string | undefined,
+  leases: Awaited<ReturnType<typeof renew>> | undefined,
+) {
+  const newShared = ctx.all("--shared");
+  if (newShared.length && intent !== "split")
+    throw new MdcError(
+      "usage",
+      "--shared names files of a decomposition's new shared modules: mdc split",
+    );
+  const { files, newShared: shared } = await contribution(
+    resolve(ctx.cwd, dir),
+    record,
+    newShared,
+  );
+  const root = ctx.flag("--root") ?? record.root;
+  const request = {
+    type: "submit_modules",
+    goal: record.goal,
+    files,
+    root,
+    shared: record.shared.ids,
+    ...(shared ? { new_shared: shared } : {}),
+    mode: intent === "prove" ? "leaf" : "sketch",
+    ...(description ? { description } : {}),
+  };
+  const summary = {
+    directory: record.file,
+    goal: record.goal,
+    root,
+    files: Object.keys(files),
+    ...(shared ? { new_shared: Object.keys(shared) } : {}),
+  };
+  if (ctx.has("--dry-run")) return { ...summary, request };
+  return {
+    ...summary,
+    ...(await deliver(ctx, w, record, request, intent)),
     ...leases,
   };
 }
 
 export async function done(ctx: VerbContext, file: string | undefined) {
   let w: Workspace;
-  let record: FileRecord;
+  let record: AnyRecord;
   if (file) ({ w, record } = await pulled(ctx, file));
   else {
     w = await workspace(ctx, ctx.cwd);
@@ -642,19 +806,57 @@ export async function refute(ctx: VerbContext, ref: string | undefined) {
  * file in the project of MDC_PROJECT (or -p).
  */
 export async function check(ctx: VerbContext, file: string | undefined) {
-  if (!file) throw new MdcError("usage", "mdc check FILE");
-  const source = await readFile(resolve(ctx.cwd, file), "utf8");
+  if (!file) throw new MdcError("usage", "mdc check FILE|DIR");
   let project: string;
   let leases: { renewed: string[]; lost: string[] } | undefined;
   try {
     const { w, record } = await pulled(ctx, file);
     project = record.project;
     leases = await renew(ctx, w);
+    if (record.format === "mdc-module-dir-record/1") {
+      // docs/module-certification.md §5.4: compiled in LeanGround's sandbox and checked as a
+      // contribution to the directory's goal; new shared files are compiled with the rest.
+      const { files, newShared } = await contribution(
+        resolve(ctx.cwd, file),
+        record,
+      );
+      const root = ctx.flag("--root") ?? record.root;
+      const out = await ctx.client.request(
+        "POST",
+        projectPath(project, "/check"),
+        {
+          files: { ...files, ...newShared },
+          shared: record.shared.ids,
+          goal: record.goal,
+          root,
+        },
+      );
+      const lines = [
+        leanMessages(out.diagnostics),
+        ...(Array.isArray(out.violations)
+          ? out.violations.map((v: string) => `${root}: ${v}`)
+          : []),
+      ].filter(Boolean);
+      return {
+        directory: record.file,
+        root,
+        ok: out.ok === true,
+        compiled: out.compiled === true,
+        ...(out.reason ? { reason: out.reason } : {}),
+        premises: Array.isArray(out.premises)
+          ? out.premises.map((p: { name?: string }) => p.name)
+          : [],
+        axioms: out.axioms ?? [],
+        ...(lines.length ? { messages: lines.join("\n") } : {}),
+        ...leases,
+      };
+    }
   } catch (e) {
     if (!(e instanceof MdcError && e.reason === "not_pulled")) throw e;
     const { database, home } = scope(ctx, "check");
     project = (await liveBoard(ctx.client, database, home)).id;
   }
+  const source = await readFile(resolve(ctx.cwd, file), "utf8");
   const out = await ctx.client.request("POST", projectPath(project, "/check"), {
     source,
   });

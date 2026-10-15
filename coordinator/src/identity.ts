@@ -45,6 +45,7 @@ export const commandScopes: Record<Command["type"], Scope[]> = {
   heartbeat: ["work"],
   finish: ["work"],
   submit: ["work"],
+  submit_modules: ["work"],
   resolve: ["work"],
   note: ["work"],
   edit_note: ["work"],

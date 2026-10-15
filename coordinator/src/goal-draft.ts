@@ -186,15 +186,6 @@ export async function goalDraft(input: {
   ].sort())
     await visit(id);
 
-  const task =
-    Object.values(b.tasks).find(
-      (t) =>
-        t.goal === input.goal && t.kind === "prove" && t.state !== "cancelled",
-    ) ?? null;
-  const attempt =
-    task?.attempt && Object.hasOwn(b.attempts, task.attempt)
-      ? b.attempts[task.attempt]
-      : undefined;
   return {
     project: b.id,
     revision: b.revision,
@@ -208,7 +199,25 @@ export async function goalDraft(input: {
     root,
     premises,
     definitions,
-    notes: (b.goals[input.goal].notes ?? [])
+    ...draftWork(b, input.goal),
+  };
+}
+
+/** What every goal draft carries besides the statement: the latest notes and the prove task. */
+export function draftWork(
+  b: Board,
+  goal: string,
+): Pick<GoalDraft, "notes" | "task"> {
+  const task =
+    Object.values(b.tasks).find(
+      (t) => t.goal === goal && t.kind === "prove" && t.state !== "cancelled",
+    ) ?? null;
+  const attempt =
+    task?.attempt && Object.hasOwn(b.attempts, task.attempt)
+      ? b.attempts[task.attempt]
+      : undefined;
+  return {
+    notes: (b.goals[goal].notes ?? [])
       .slice(-DRAFT_NOTES)
       .reverse()
       .map((n) => ({

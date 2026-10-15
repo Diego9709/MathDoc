@@ -9,6 +9,18 @@
     untrack(() => void c.loadDetail(id));
   });
   const d = $derived(c.details[cert]);
+  /** A module certificate's source is its files as JSON (docs/module-certification.md §5.4). */
+  function filesOf(source: string): [string, string][] | null {
+    try {
+      const v = JSON.parse(source);
+      if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+      const entries = Object.entries(v);
+      return entries.length && entries.every(([p, t]) => p.endsWith(".lean") && typeof t === "string")
+        ? (entries as [string, string][])
+        : null;
+    } catch { return null; }
+  }
+  const files = $derived(d && d !== "loading" && !("error" in d) && d.source ? filesOf(d.source) : null);
 </script>
 
 {#if !d || d === "loading"}
@@ -20,7 +32,11 @@
     <p class="group">Definitions used</p>
     {#each d.definition_sources as def (def.id)}<pre class="lean" title={def.id}>{def.source.trim()}</pre>{/each}
   {/if}
-  {#if d.source}
+  {#if files}
+    {#each files as [path, text] (path)}
+      <details class="source"><summary>{path}</summary><pre class="lean">{text.trim()}</pre></details>
+    {/each}
+  {:else if d.source}
     <details class="source"><summary>Lean source</summary><pre class="lean">{d.source.trim()}</pre></details>
   {/if}
 {/if}

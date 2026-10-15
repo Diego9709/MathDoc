@@ -24,11 +24,12 @@ import { baseRefSchema } from "./contracts.js";
 import { proposition, scan } from "./lean-source.js";
 import { DocError } from "./docs/names.js";
 import type { Snapshot } from "./docs/graph.js";
-import { batchInputs } from "./writeback-plan.js";
+import { batchInputs, moduleBatchInputs } from "./writeback-plan.js";
 import {
   conclusionProposition,
   convert,
   definitionSource,
+  digestText,
   isStale,
   requestContract,
   submission,
@@ -46,6 +47,32 @@ import {
   nodeCallerRef,
   type Writeback,
 } from "./writeback.js";
+import {
+  addSharedModule,
+  buildModuleBatch,
+  leanBlock,
+  projectFiles,
+  statementOf,
+} from "./modules.js";
+import { goalName } from "./goal-view.js";
+import type { ModuleStatement, SharedModule } from "./domain.js";
+
+/** What converting a branch found (§4.7; module projects: docs/module-certification.md §5.4). */
+interface Bound {
+  c: Pick<Conversion, "bindings"> & Partial<Conversion>;
+  goals?: Record<string, Record<string, unknown>>;
+  certs?: unknown[];
+  contract?: ReturnType<typeof requestContract>["contract"];
+  identity?: string;
+  version?: string;
+  error: string | undefined;
+  /** Module projects: how the root goal is stated, and the shared module registered for it. */
+  module?: {
+    statement: ModuleStatement;
+    shared?: SharedModule;
+    declaration?: Declaration;
+  };
+}
 const eventsSchema = z.object({
   cursor: z.number().int().nonnegative(),
   has_more: z.boolean(),
@@ -297,7 +324,12 @@ export class Worker {
    * premise nodes). Nodes whose proof is `sorry` stay open goals with a prove task.
    * A branch whose root resolves to another goal than `expectedRoot` submits nothing.
    */
-  private async bind(b: Board, request: ProofRequest, expectedRoot?: string) {
+  private async bind(
+    b: Board,
+    request: ProofRequest,
+    expectedRoot?: string,
+  ): Promise<Bound> {
+    if (b.mode === "modules") return this.bindModules(b, request, expectedRoot);
     const snap = await this.snapshot(request);
     const c = convert(snap.nodes, request.node, b.context as never);
     if (!snap.nodes.has(request.node))
@@ -396,16 +428,147 @@ export class Worker {
       error: undefined,
     };
   }
-  /** Record a branch conversion on the board (inside a checkpoint). */
-  private applyBind(
+  /**
+   * A module project's branch (docs/module-certification.md §5.4): the root node's file is the
+   * statement, and the Lean files it reaches are registered together as one shared module.
+   * Nothing else is submitted: proofs come from `mdc prove` / `mdc split`.
+   */
+  private async bindModules(
     b: Board,
-    name: string,
-    bound: Awaited<ReturnType<Worker["bind"]>>,
-    actor: string,
-  ) {
+    request: ProofRequest,
+    expectedRoot?: string,
+  ): Promise<Bound> {
+    const snap = await this.snapshot(request);
+    const bindings: Record<string, NodeBinding> = {};
+    const c = { bindings };
+    if (!snap.nodes.has(request.node))
+      return { c, error: "root_not_on_branch" };
+    if (!leanBlock(snap.nodes.get(request.node)!))
+      return { c, error: "root_has_no_lean_block" };
+    const files = projectFiles(snap.nodes, request.node);
+    const bind = (id: string, role: NodeBinding["role"]) => {
+      const n = snap.nodes.get(id)!;
+      bindings[id] = {
+        node: id,
+        title: n.title,
+        role,
+        lean_content_sha256: digestText(leanBlock(n)!.content),
+        state: "pending",
+      };
+      return bindings[id];
+    };
+    for (const [id, p] of files.problems)
+      Object.assign(bind(id, id === request.node ? "theorem" : "definition"), {
+        state: "rejected",
+        ...p,
+      });
+    if (!files.root)
+      return {
+        c,
+        error: `root_${bindings[request.node]?.reason ?? "unresolved"}`,
+      };
+    const top = bind(request.node, "theorem");
+    top.definition_nodes = files.shared.map((f) => f.node);
+    const blocked = [...files.problems.keys()].filter(
+      (x) => x !== request.node,
+    );
+    if (blocked.length) {
+      Object.assign(top, {
+        state: "rejected",
+        reason: "unregistered_statement_definition",
+        details: `node ${bindings[blocked[0]].title} cannot be a module`,
+      });
+      return { c, error: "root_unregistered_statement_definition" };
+    }
+    let shared: SharedModule | undefined;
+    if (files.shared.length) {
+      const nodes = files.shared.map((f) => bind(f.node, "definition"));
+      const out = await this.attempt(nodes[0], () =>
+        this.lean.modules("shared", {
+          base: b.base,
+          files: Object.fromEntries(
+            files.shared.map((f) => [f.path, f.content]),
+          ),
+          scope: this.scope(b),
+        }),
+      );
+      if (!out) {
+        // One registration for all of them: each node shows why it failed.
+        for (const n of nodes.slice(1))
+          Object.assign(n, {
+            state: "rejected",
+            reason: nodes[0].reason,
+            details: nodes[0].details,
+          });
+        Object.assign(top, {
+          state: "rejected",
+          reason: "unregistered_statement_definition",
+          details: "the files it depends on were not registered",
+        });
+        return { c, error: "root_unregistered_statement_definition" };
+      }
+      shared = {
+        id: z.string().min(1).parse(out.id),
+        modules: z
+          .array(z.object({ module: z.string() }))
+          .parse(out.modules)
+          .map((m) => m.module),
+        nodes: files.shared.map((f) => f.node),
+      };
+      for (const n of nodes)
+        Object.assign(n, { state: "registered", definition_ids: [shared.id] });
+    }
+    const named = leanBlock(snap.nodes.get(request.node)!)!.metadata
+      .lean_conclusion;
+    const resolved = await this.attempt(top, () =>
+      this.lean.modules("resolve", {
+        base: b.base,
+        files: { [files.root!.path]: files.root!.content },
+        shared: shared ? [shared.id] : [],
+        ...(named ? { statement: named } : {}),
+      }),
+    );
+    if (!resolved) return { c, error: `root_${top.reason ?? "unresolved"}` };
+    const goal = identitySchema.parse(resolved.goal_key);
+    const constant = z.string().min(1).parse(resolved.statement?.const);
+    Object.assign(top, { goal: goal.key, conclusion: constant, state: "open" });
+    if (expectedRoot && goal.key !== expectedRoot)
+      return { c, error: "root_statement_differs" };
+    const { contract, identity } = requestContract(
+      this.environment(b, request),
+      request,
+      snap.nodes,
+      c as Conversion,
+      snap.version,
+    );
+    return {
+      c,
+      goals: { [request.node]: goal },
+      certs: [],
+      contract,
+      identity,
+      version: snap.version,
+      error: undefined,
+      module: {
+        statement: {
+          const: constant,
+          shared: shared ? [shared.id] : [],
+          node: request.node,
+          path: files.root.path,
+        },
+        ...(shared ? { shared } : {}),
+        declaration: statementOf(
+          { [files.root.path]: files.root.content },
+          constant,
+        ),
+      },
+    };
+  }
+  /** Record a branch conversion on the board (inside a checkpoint). */
+  private applyBind(b: Board, name: string, bound: Bound, actor: string) {
     const branch = attached(b, name);
     branch.nodes = bound.c.bindings;
-    if (bound.error !== undefined) {
+    if (bound.error !== undefined || !bound.goals) {
       Object.assign(branch.request, { bound: false, error: bound.error });
       return;
     }
@@ -423,8 +586,19 @@ export class Worker {
         identitySchema.parse(goal),
         bound.c.bindings[id].title,
       );
-      stateGoal(b, String(goal.key), this.nodeStatement(bound.c, id));
+      if (bound.module) {
+        const g = b.goals[String(goal.key)];
+        g.module ??= bound.module.statement;
+        if (bound.module.declaration)
+          g.declaration ??= bound.module.declaration;
+      } else
+        stateGoal(
+          b,
+          String(goal.key),
+          this.nodeStatement(bound.c as Conversion, id),
+        );
     }
+    if (bound.module?.shared) addSharedModule(b, bound.module.shared);
     Object.assign(branch.request, {
       bound: true,
       contract: bound.contract,
@@ -434,7 +608,7 @@ export class Worker {
     });
     delete branch.request.error;
     // The branch's editor wrote these decompositions into the document (§2.7.3).
-    for (const cert of bound.certs)
+    for (const cert of bound.certs ?? [])
       ingest(b, cert, { source: "document", actor, at: Date.now() });
     derivePicks(b, branch);
   }
@@ -490,7 +664,7 @@ export class Worker {
         for (const [name, branch] of Object.entries(b.branches ?? {}))
           if (!branch.request.bound) {
             const r = await this.bind(b, branch.request, root);
-            if (r.error === undefined)
+            if (r.error === undefined && r.goals)
               root ??= String(r.goals[branch.request.node].key);
             bound.push([name, r]);
           }
@@ -672,6 +846,109 @@ export class Worker {
                   definitions: s.definitions ?? stated.definitions,
                   declaration: s.declaration,
                 });
+            }
+          },
+          true,
+          result,
+        );
+        return;
+      }
+      case "submit_modules": {
+        // docs/module-certification.md §5.4: a contribution's files, checked by LeanGround's
+        // lean-modules component. New shared modules (`mdc split --shared`) are registered first.
+        const p = j.payload as {
+          goal: string;
+          files: Record<string, string>;
+          root: string;
+          shared?: string[];
+          new_shared?: Record<string, string>;
+          mode: "leaf" | "sketch";
+          description?: string;
+        };
+        const goal = b.goals[p.goal]?.identity;
+        requireThat(goal, "goal_identity_unavailable");
+        let shared = [...(p.shared ?? [])];
+        let registered: SharedModule | undefined;
+        if (p.new_shared) {
+          const out = await this.lean.modules("shared", {
+            base: b.base,
+            files: p.new_shared,
+            shared,
+            scope: this.scope(b),
+          });
+          registered = {
+            id: z.string().min(1).parse(out.id),
+            modules: z
+              .array(z.object({ module: z.string() }))
+              .parse(out.modules)
+              .map((m) => m.module),
+          };
+          shared = [...new Set([...shared, registered.id])].sort();
+        }
+        const cert = await this.lean.modules("submit", {
+          base: b.base,
+          goal,
+          files: p.files,
+          root: p.root,
+          shared,
+          mode: p.mode,
+          scope: this.scope(b),
+          caller_ref: j.id,
+        });
+        const identities = z
+          .record(identitySchema)
+          .catch({})
+          .parse(cert.premise_goals ?? {});
+        const placeholders = z
+          .array(
+            z.object({ name: z.string(), role: z.string(), goal: z.string() }),
+          )
+          .parse(cert.bindings)
+          .filter((x) => x.role === "premise");
+        const used = z
+          .array(z.string())
+          .catch(shared)
+          .parse(cert.shared ?? shared);
+        const result: Record<string, unknown> = {
+          certificate: cert.id,
+          goal: cert.goal,
+          mode: p.mode,
+          premises: placeholders.map((x) => ({
+            goal: x.goal,
+            name: x.name,
+            new: !Object.hasOwn(b.goals, x.goal),
+            statement: identities[x.goal] ? "resolved" : "identity_missing",
+          })),
+          ...(registered ? { shared: registered.id } : {}),
+        };
+        await this.store.checkpoint(
+          j,
+          (b) => {
+            if (registered)
+              addSharedModule(b, {
+                ...registered,
+                certificate: String(cert.id),
+              });
+            ingest(b, cert, {
+              source: "agent",
+              actor: j.actor,
+              at: Date.now(),
+            });
+            const fact = b.facts[String(cert.id)];
+            result.state = fact.state;
+            if (p.description && !fact.description)
+              fact.description = p.description;
+            for (const x of placeholders) {
+              addGoal(b, x.goal, identities[x.goal]);
+              const g = b.goals[x.goal];
+              g.statement ||= x.name;
+              // The first decomposition stating a premise is where its drafts start.
+              g.module ??= {
+                const: x.name,
+                shared: used,
+                certificate: String(cert.id),
+              };
+              g.declaration ??= statementOf(p.files, x.name);
             }
           },
           true,
@@ -1005,22 +1282,35 @@ export class Worker {
           });
           return;
         }
-        const { certificates, definitions } = await batchInputs(
-          this.lean,
-          b,
-          run,
-          branch.nodes,
-        );
         let built;
         try {
-          built = buildBatch({
-            request: branch.request,
-            nodes: branch.nodes,
-            run,
-            snapshot: snap,
-            certificates,
-            definitions,
-          });
+          if (b.mode === "modules") {
+            const inputs = await moduleBatchInputs(this.lean, b, run);
+            built = buildModuleBatch({
+              board: b,
+              request: branch.request,
+              nodes: branch.nodes,
+              run,
+              snapshot: snap,
+              ...inputs,
+              label: (goal) => goalName(b, goal),
+            });
+          } else {
+            const { certificates, definitions } = await batchInputs(
+              this.lean,
+              b,
+              run,
+              branch.nodes,
+            );
+            built = buildBatch({
+              request: branch.request,
+              nodes: branch.nodes,
+              run,
+              snapshot: snap,
+              certificates,
+              definitions,
+            });
+          }
         } catch (e) {
           if (!(e instanceof Conflict)) throw e;
           await record({

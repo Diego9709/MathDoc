@@ -137,6 +137,7 @@ Project（= 一个 TerminusDB 数据库）
      拆法新引入的定义不需要做忠实性审阅（最终组装的结论是根陈述）[推断]。
 2. **拆法有生命周期，类似合并请求（PR）**：`proposed` → `active` → `paused` / `retired` / `refuted`。
    新拆法默认 `proposed`，未经审阅不参与调度（项目决定 B）。项目阶段 3 已实现（§3.5）；`refuted` 在阶段 5 实现（§3.7）。
+   模块模式的项目例外：新拆法直接是 `active`，owner 可以事后暂停或撤下（`docs/module-certification.md` §6 决定 4，2026-10-15）。
 3. **证否是必需品。** 证出 ¬P 后，含 P 的拆法自动标为 `refuted`。项目阶段 5 已实现，由 MathDoc 解析 ¬P，不需要 LeanGround 改动（§3.7）。
 4. **共享失败记忆。** LeanGround 按设计不保存失败尝试；协调层给每个目标挂尝试笔记（试了什么、卡在哪个证明目标）[推断：对 Agent 群体最省预算]。项目阶段 3 已实现（§3.5）。
 5. **租约只用来减少重复，不是独占权。** 过期后才交上来的正确证明照样接收（已实现）。
@@ -219,7 +220,7 @@ Project（= 一个 TerminusDB 数据库）
 | 编号 | 决定 |
 |---|---|
 | A | 一个 Project 对应一个数据库 |
-| B | 新拆法默认 `proposed`，可以按项目配置（尚未实现） |
+| B | 新拆法默认 `proposed`，可以按项目配置（项目阶段 3 已实现 `policy`）。模块模式的项目建立时就不要求审阅，新拆法直接生效，owner 事后停用（2026-10-15，`docs/module-certification.md` §6 决定 4） |
 | C | 分支路线存在看板里 |
 | D | 现有按分支建立的证明请求只读保留；新请求一律进入 Project 看板 |
 | E | `mdc check` 需要的草稿检查由 LeanGround 提供接口 |
@@ -494,7 +495,7 @@ dsh 的沙箱又不限制读和网络，模型的训练数据也可能见过这�
 
 - `docs/external-proofs.md`：外部证明的导入与项目核验（2026-10-14；第一版已实现，10 份配置在核验）。
 - `docs/module-certification.md`：模块级认证，协作证明的认证单位由一条声明改为一组完整的 Lean 模块（2026-10-14 初稿；阶段 0 原型、
-  阶段 1 LeanGround 组件已完成，代码未提交、未部署；阶段 2 MathDoc 接入未开始）。
+  阶段 1 LeanGround 组件、阶段 2 MathDoc 接入已完成，代码未提交、未部署；阶段 3 试点未开始）。
 
 ## 3. 研发进度
 
@@ -1409,7 +1410,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 **使用的接口**：
 
 - `POST /v1/facts/{submit,define,resolve,read,plan,assemble,project,widen,events}`；
-- `GET /v1/bases/{key}`。
+- `GET /v1/bases/{key}`；
+- 模块模式的项目另用 `POST /v1/modules/{shared,resolve,check,submit}`（LeanGround `docs/14`；`docs/module-certification.md` §5.4），
+  组装仍走 `/v1/facts/plan` 与 `/v1/facts/assemble`，组件是 `lean-modules`。
 
 **超时与重试**（项目阶段 6）：`resolve`、`submit`、`define`、`assemble` 要运行 Lean，上限默认 960 秒（`LEANGROUND_TIMEOUT_S`），
 比 LeanGround 自身的单请求默认上限 900 秒略长；其余调用 30 秒。超时报 `leanground_timeout`，连不上报 `leanground_unavailable`，

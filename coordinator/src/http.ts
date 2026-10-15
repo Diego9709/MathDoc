@@ -9,6 +9,7 @@ import {
   Fault,
   createSchema,
   commandSchema,
+  moduleFiles,
   documentCreateSchema,
   newBoard,
   newProjectBoard,
@@ -24,6 +25,7 @@ import {
 import { decompositions, goalDetail, goalSummaries } from "./goal-view.js";
 import { fetchBase, resolveProject } from "./worker.js";
 import { goalDraft } from "./goal-draft.js";
+import { moduleDraft } from "./modules.js";
 import {
   actorName,
   allows,
@@ -46,6 +48,8 @@ import {
   environmentInputSchema,
   Environments,
 } from "./proof.js";
+/** A module project's contribution may be many files: LeanGround takes request bodies up to 32 MB. */
+const CONTRIBUTION_LIMIT = 32 * 1024 * 1024;
 async function body(req: IncomingMessage, limit = 2200000) {
   const chunks: Buffer[] = [];
   let length = 0;
@@ -555,7 +559,7 @@ export function server(
       if (h && !(await canRead(actor, h.database, h.branch)))
         throw new Fault("not_found", 404);
       if (operation === "commands" && method === "POST") {
-        const input = commandSchema.parse(await body(req));
+        const input = commandSchema.parse(await body(req, CONTRIBUTION_LIMIT));
         const grants: Grants = {};
         // §2.7.7: a branch's route is part of its content, so its editors pick too; the
         // owner picks with `maintain`, an editor (or an owner's token without it) with `edit`.
@@ -647,6 +651,44 @@ export function server(
         send(res, 200, await previewWriteback(lean, load, b, child));
         return;
       }
+      if (
+        operation === "check" &&
+        !child &&
+        method === "POST" &&
+        b.mode === "modules"
+      ) {
+        // docs/module-certification.md §5.4: LeanGround compiles the files in its sandbox and,
+        // given a goal, checks them as a contribution to it. Nothing is recorded.
+        requireScope(who, "work");
+        const input = z
+          .object({
+            files: moduleFiles,
+            shared: z.array(z.string().min(1).max(200)).max(100).default([]),
+            goal: z.string().min(1).max(200).optional(),
+            root: z.string().min(1).max(200).optional(),
+          })
+          .strict()
+          .parse(await body(req, CONTRIBUTION_LIMIT));
+        const goal =
+          input.goal === undefined
+            ? undefined
+            : Object.hasOwn(b.goals, input.goal)
+              ? b.goals[input.goal].identity
+              : undefined;
+        requireThat(input.goal === undefined || goal, "unknown_goal", 404);
+        requireThat(input.goal === undefined || input.root, "root_required", 400);
+        send(
+          res,
+          200,
+          await lean.modules("check", {
+            base: b.base,
+            files: input.files,
+            shared: input.shared,
+            ...(goal ? { goal, root: input.root } : {}),
+          }),
+        );
+        return;
+      }
       if (operation === "check" && !child && method === "POST") {
         // §2.7.8: LeanGround checks a draft on the project's base. Nothing is recorded and no
         // certificate is made, so it does not count as a submission.
@@ -712,6 +754,7 @@ export function server(
       }
       if (operation === "nodes" && child && draft && method === "GET") {
         // Agents start from the converted node: placeholders, definitions and identity.
+        requireThat(b.mode !== "modules", "not_in_module_mode");
         requireThat(documents, "documents_not_configured", 503);
         let request = b.request;
         let nodes = b.nodes ?? {};
@@ -765,6 +808,34 @@ export function server(
           .filter(Boolean);
         requireThat(extra.length <= 100, "too_many_premises", 400);
         const database = b.project.database;
+        if (b.mode === "modules") {
+          // docs/module-certification.md §5.4: the goal's statement files and shared modules.
+          send(
+            res,
+            200,
+            await moduleDraft({
+              board: b,
+              goal: child,
+              branch: name,
+              snapshot: async (branch) => {
+                requireThat(documents, "documents_not_configured", 503);
+                return documents.terminus.database(database, branch).load();
+              },
+              certificate: async (cid) => {
+                const f = await lean.fact("read", {
+                  kind: "certificate",
+                  id: cid,
+                  source: true,
+                });
+                checkFact(b, f);
+                return f;
+              },
+              shared: (sid) =>
+                lean.fact("read", { kind: "module", id: sid, source: true }),
+            }),
+          );
+          return;
+        }
         send(
           res,
           200,

@@ -37,7 +37,7 @@
               <td>{n.role}</td>
               <td title={[nodeStateHelp[n.state], n.details].filter(Boolean).join("\n")}>{n.state}{n.reason ? ` · ${n.reason}` : ""}</td>
               <td>{#if n.goal}<GoalStatus status={c.statusOf(n.goal)} />{/if}</td>
-              <td>{#if n.role === "theorem" && !c.frozen}<button title="Read this node again from the branch and submit its current proof" disabled={c.busy || !b.ready} onclick={() => void c.run({ type: "submit_node", node: n.node, ...c.here })}>Resubmit</button>{/if}</td>
+              <td>{#if n.role === "theorem" && !n.file && b.mode !== "modules" && !c.frozen}<button title="Read this node again from the branch and submit its current proof" disabled={c.busy || !b.ready} onclick={() => void c.run({ type: "submit_node", node: n.node, ...c.here })}>Resubmit</button>{/if}</td>
             </tr>
           {/each}
         </tbody>
@@ -79,6 +79,7 @@
       <dt>Members</dt><dd>{b.members.join(", ")}: can claim tasks and submit proofs</dd>
       <dt>Budget</dt><dd>{b.spent} spent · {reserved} reserved by open claims · {b.budget} in total</dd>
       <dt>Trust</dt><dd>{b.minimum_trust}: certificates LeanGround trusts less than this do not count</dd>
+      <dt>Mode</dt><dd>{b.mode === "modules" ? "modules: every Lean node is a whole file; a proof is a set of files (mdc pull writes a directory)" : "declarations: Lean nodes are converted declaration by declaration"}</dd>
       {#if b.project}
         <dt>Review</dt>
         <dd>

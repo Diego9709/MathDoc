@@ -62,6 +62,36 @@ export interface FileRecord {
   submissions: Submission[];
 }
 
+/**
+ * A module project's goal directory (docs/module-certification.md §5.4): every `.lean` file in it
+ * is the contribution, except the shared modules it was pulled with, which must stay unchanged.
+ */
+export interface ModuleRecord {
+  format: "mdc-module-dir-record/1";
+  /** Path of the directory relative to the workspace root. */
+  file: string;
+  project: string;
+  database: string;
+  branch: string;
+  goal: string;
+  environment_id: string;
+  /** The statement constant: the root theorem a contribution proves, unless `--root` names another. */
+  root: string;
+  /** Where the starting files came from: the root node, or the decomposition stating the goal. */
+  statement: {
+    from: "node" | "decomposition";
+    certificate?: string;
+    paths: string[];
+  };
+  /** Shared modules: their IDs (sent with every submission) and their files' SHA-256 by path. */
+  shared: { ids: string[]; files: Record<string, string> };
+  pulled_revision: number;
+  lease: Lease | null;
+  submissions: Submission[];
+}
+/** Either kind of record: what leases, replays and `done` need of both. */
+export type AnyRecord = FileRecord | ModuleRecord;
+
 async function exists(path: string) {
   try {
     await stat(path);
@@ -122,7 +152,7 @@ const recordPath = (w: Workspace, rel: string) =>
 export async function read(
   w: Workspace,
   rel: string,
-): Promise<FileRecord | undefined> {
+): Promise<AnyRecord | undefined> {
   try {
     return JSON.parse(await readFile(recordPath(w, rel), "utf8"));
   } catch (e) {
@@ -131,18 +161,18 @@ export async function read(
   }
 }
 
-export async function write(w: Workspace, r: FileRecord) {
+export async function write(w: Workspace, r: AnyRecord) {
   await writeDurably(recordPath(w, r.file), `${JSON.stringify(r, null, 2)}\n`);
 }
 
-export async function list(w: Workspace): Promise<FileRecord[]> {
+export async function list(w: Workspace): Promise<AnyRecord[]> {
   let names: string[];
   try {
     names = await readdir(join(w.root, DIRECTORY, "files"));
   } catch {
     return [];
   }
-  const out: FileRecord[] = [];
+  const out: AnyRecord[] = [];
   for (const n of names.filter((x) => x.endsWith(".json")).sort()) {
     const r = await read(w, decodeURIComponent(n.slice(0, -".json".length)));
     if (r) out.push(r);

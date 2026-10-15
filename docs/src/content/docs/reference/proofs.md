@@ -20,6 +20,7 @@ by all its branches. It fixes what the project's goals mean:
 | `context` | Lines every node's context must equal: `opens`, `local_options` (`set_option …`), `universes`, `variables`. The schema also accepts `raw`, `local_notation`, `local_attrs`; `namespaces` must be empty. |
 | `options` | Lean options, a JSON object of string, number or boolean values. |
 | `minimum_trust` | `claimed`, `audited` (default) or `trusted`; weaker certificates are ignored. |
+| `mode` | `declarations` (default): nodes are converted declaration by declaration. `modules`: every Lean node is a whole Lean file, and `context` and `options` must be empty ([Module projects](#module-projects)). |
 
 ```sh
 mdc proof env -p myproject/main
@@ -31,7 +32,7 @@ EOF
 `-p` only names the database here; any branch selects the same environment.
 Reading needs read access on `main`; setting needs owner or admin (a delegated
 token also needs `maintain`). The response adds `base`, `environment_id` (a
-digest of base, context, options and trust), `updated_by` and, after a change,
+digest of base, context, options and trust, and of the mode when it is `modules`), `updated_by` and, after a change,
 `replaces_environment_id`. A database without an environment of its own uses the
 one MathDoc stored for its `main` branch before environments moved to databases.
 
@@ -107,6 +108,35 @@ certificate becomes the branch's pick for its goal. Use it after replacing a
 `sorry` in the document; a node still at `sorry` is rejected with `open_goal`.
 The branch must be bound (`branch_not_bound`) and the node a converted theorem
 node (`not_a_theorem_node`).
+
+## Module projects
+
+In a `modules` environment every node with a Lean block is a whole Lean file, which LeanGround compiles
+as written: any Lean is allowed, namespaces, instances, attributes and `set_option` included. The design
+and its measurements are in `docs/module-certification.md` of the repository.
+
+- **Module names.** A node's file is the module its Lean block metadata names (`lean_module`, or
+  `import_module` for an imported file), else the node's own module, such as `Lib.N_…`. Other files
+  import it by that name.
+- **Attaching a branch.** The root node's file states the theorem: exactly one theorem whose proof is
+  `sorry`, or the one `lean_conclusion` names. The Lean nodes the root reaches by dependencies or by its
+  imports are registered together as one shared module; they may hold lemmas as well as definitions. A
+  node that cannot be a file says why (`invalid_module_name`, `module_name_conflict`, or LeanGround's
+  reason such as `compile_failed` with Lean's messages).
+- **Contributions.** A proof of a goal is a set of files (`mdc pull` writes a directory,
+  [Workspace commands](../workspace-commands/#module-projects)). LeanGround compiles them in a sandbox
+  and connects their root theorem to the goal's statement by the kernel. Theorems the root uses whose
+  proof is `sorry` are its premises and become goals; their statements may use only the base and shared
+  modules. A contribution cannot import another one.
+- **Review.** New decompositions are `active` at once; the owner can pause or retire one later.
+- **Assembly** always uses the `lean-modules` component: certificates are merged at the constant level
+  and replayed from an empty environment.
+- **Writeback** creates a node for every file of every certificate on the route (block metadata
+  `contribution`, `module_path`, `certification_id`), with edges for its imports and from a
+  decomposition to the proofs of its premises, and nodes for shared modules a decomposition registered.
+  The root node keeps its text, the statement, and records the final certificate.
+- `submit`, `resolve`, `submit_node` and `negate` are refused (`not_in_module_mode`): a module goal has no
+  proposition text, so it cannot be refuted by registering its negation.
 
 ## Statuses
 
@@ -184,7 +214,8 @@ earlier versions refuse every command (`project_superseded`,
 | `delete_note` | the note's author (or their person), or the owner | `goal`, `note` (`{actor, at}`) | Remove a note. |
 | `negate` | member | `goal` | Queued: register the goal's negation as a goal (job result `{goal, negation, name}`); answers `{goal, negation}` at once when one is registered ([Refutation](../../concepts/collaboration/#refutation)). `goal_unresolved` for a goal without a statement, `already_refuted`. |
 | `resolve` | member | `goal`, `proposition`, `definitions` | Queued: give a known GoalKey its statement; the job fails with `identity_mismatch` if the proposition resolves to another key. |
-| `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions`, `description?` | Queued: submit a proof or sketch for a goal with a statement (`goal_identity_unavailable`); a sketch's new premises get their statements ([below](#new-subgoals)). Needs no lease. |
+| `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions`, `description?` | Queued: submit a proof or sketch for a goal with a statement (`goal_identity_unavailable`); a sketch's new premises get their statements ([below](#new-subgoals)). Needs no lease. Not in module projects. |
+| `submit_modules` | member | `goal`, `files` (path → text, 1–64), `root`, `shared`, `new_shared?`, `mode` (`leaf`/`sketch`), `description?` | Module projects only (`not_a_module_project`): queued, LeanGround checks the files as a contribution to the goal ([Module projects](#module-projects)); `new_shared` files are registered as a shared module first. Needs no lease. |
 | `submit_node` | member | `node`, `branch` | Queued: resubmit a theorem node of a bound branch. |
 | `attach` | member, `editor` on the branch | `branch` | Queued: convert the branch from the root node (again). |
 | `import` | member | `certificate` | Queued: bring a certificate that is public or shared with this project into it (`fact_not_shared`, `environment_mismatch`, `trust_rejected`). |

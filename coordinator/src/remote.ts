@@ -103,6 +103,13 @@ export class LeanGround {
       LEAN_OPERATIONS.has(operation) ? this.leanTimeoutMs : SHORT_TIMEOUT_MS,
     );
   }
+  /**
+   * Module certification (docs/module-certification.md §5.2): `shared`, `resolve`, `check` and
+   * `submit` compile Lean files in a sandbox, so all four get the long time limit.
+   */
+  modules(operation: "shared" | "resolve" | "check" | "submit", body: unknown) {
+    return this.call(`/v1/modules/${operation}`, body, this.leanTimeoutMs);
+  }
   /** Submit a project check (docs/external-proofs.md §3.1): Comparator on a registered workspace. */
   projectCheck(body: unknown) {
     return this.call("/v1/project-checks", body);

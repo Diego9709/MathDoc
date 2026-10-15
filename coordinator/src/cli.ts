@@ -29,7 +29,8 @@ nodes:      show REF | new -t TITLE [--parent REF] | del REF | rename REF TITLE
             edit REF [--type text|lean|rocq|latex] [--delete]   (source from stdin)
             dep add REF -t TARGET | dep rm REF -t TARGET... | dep show|refs REF [-d DEPTH]
             dep leaf REF | dep candidates REF [QUERY] [-n N] | metric ior REF
-proof:      proof env [set]             (the database's environment; set reads JSON from stdin)
+proof:      proof env [set]             (the database's environment; set reads JSON from stdin;
+                                         "mode": "modules" makes every Lean node a whole file)
             proof submit REF [--budget N] [--members a,b]   (create the project or attach the branch)
             proof list [REF] | proof status ID | proof command ID   (command JSON from stdin)
 goals:      goals [--status S] [--branch B] | goal GOAL   (the project's goals; one goal in full)
@@ -39,6 +40,8 @@ work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with 
             prove FILE [--wait] [--dry-run] [--again]
             split FILE -m DESCRIPTION [--wait] [--dry-run] [--again]
             check FILE                 (LeanGround checks it now: Lean's messages; no submission)
+                                       module projects: pull writes a directory (see its GOAL.md);
+                                       prove|split|check DIR [--root NAME], split DIR --shared FILE...
             done [FILE] [--spent N] [--outcome O] [--note TEXT]
             note FILE|GOAL -m TEXT     (what was tried, where it got stuck)
                                        DESCRIPTION, notes: Markdown, math in $…$ or $$…$$
@@ -235,6 +238,7 @@ export async function main(
     project,
     stateDir: maintain.stateDir(env),
     flag,
+    all: (name) => flags[name] ?? [],
     has: (name) => flags[name] !== undefined,
     now: io.now ?? Date.now,
     sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
