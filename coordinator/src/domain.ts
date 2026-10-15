@@ -1102,7 +1102,7 @@ export interface JobInput {
 export interface Grants {
   /** The actor may write the branch the command names (§2.7.7: editors pick their route). */
   editsBranch?: boolean;
-  /** The actor's token may run owner commands (`maintain`): an owner removes others' notes. */
+  /** The actor's token may run owner commands (`maintain`): an owner removes others' notes and releases their leases. */
   maintains?: boolean;
 }
 export function command(
@@ -1253,7 +1253,17 @@ export function command(
       const t = b.tasks[a.task];
       if (c.type === "heartbeat") renewLease(a, t, actor, c, now);
       else {
-        endLease(a, t, actor, c, now);
+        // A session that stopped without `mdc done` leaves its lease until it expires (an hour by
+        // default). Besides its holder, the person behind the token, or the owner with
+        // `maintain`, may release it, as they may remove a note; only a release spending
+        // nothing, so nobody reports another's spending or outcome.
+        const releaser =
+          actor !== a.actor &&
+          c.outcome === "released" &&
+          c.spent === 0 &&
+          ((!actor.includes("/") && principalOf(a.actor) === actor) ||
+            (b.owner === principalOf(actor) && grants.maintains === true));
+        endLease(a, t, releaser ? a.actor : actor, c, now);
         b.spent += a.spent;
         if (c.note)
           addNote(b, b.tasks[a.task].goal, {

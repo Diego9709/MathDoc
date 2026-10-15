@@ -498,13 +498,54 @@ test("stage 4: a delegated token acts for its person; leases and audit keep the 
     { type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl: 60 },
     1,
   );
+  // A lease its session left behind: the token's person, or the owner with `maintain`, releases
+  // it, spending nothing; nobody else, and no other outcome.
+  const release = (
+    who: string,
+    attempt: { id: string; epoch: number },
+    extra = {},
+    grants = {},
+  ) =>
+    command(
+      b,
+      who,
+      commandSchema.parse({
+        type: "finish",
+        attempt: attempt.id,
+        epoch: attempt.epoch,
+        spent: 0,
+        outcome: "released",
+        ...extra,
+      }),
+      1,
+      grants,
+    );
+  // c is bob/agent-b's: bob's other token and other members cannot release it.
+  assert.throws(() => release("bob/agent-a", c), /stale_lease/);
+  assert.throws(() => release("carol", c), /not_found|stale_lease/);
+  assert.throws(
+    () => release("bob", c, { outcome: "submitted" }),
+    /stale_lease/,
+  );
+  assert.throws(() => release("alice", c), /stale_lease/);
+  assert.throws(
+    () => release("alice/lead", c, {}, { maintains: false }),
+    /stale_lease/,
+  );
+  release("alice", c, {}, { maintains: true });
+  assert.equal(b.attempts[c.id].outcome, "released");
+  assert.equal(b.tasks[taskOf("B")].state, "ready");
+  const again = claim("bob/agent-b", "B");
+  release("bob", again);
+  assert.equal(b.attempts[again.id].outcome, "released");
+  const c2 = claim("bob/agent-b", "B");
   // Changing members keeps the leases of tokens whose person stays a member.
   command(b, "alice", { type: "members", members: ["bob", "carol"] }, 2);
   assert.equal(b.attempts[a.id].outcome, undefined);
   b.ready = true; // the provision job that re-registers members has run
   command(b, "alice", { type: "members", members: ["carol"] }, 3);
   assert.equal(b.attempts[a.id].outcome, "revoked");
-  assert.equal(b.attempts[c.id].outcome, "revoked");
+  assert.equal(b.attempts[c2.id].outcome, "revoked");
 });
 test("stage 5: a proved negation refutes its goal; decompositions using it leave routes and their tasks end", () => {
   const b = projectBoard();

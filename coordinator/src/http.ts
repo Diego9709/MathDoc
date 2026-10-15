@@ -572,7 +572,8 @@ export function server(
           await documentRole(actor, m.database, input.branch, "write");
           grants.editsBranch = true;
         } else requireScope(who, ...commandScopes[input.type]);
-        if (input.type === "delete_note") grants.maintains = allows(who, "maintain");
+        if (input.type === "delete_note" || input.type === "finish")
+          grants.maintains = allows(who, "maintain");
         if (input.type === "members") {
           requireThat(
             input.members.every((m) => Object.hasOwn(cfg.actors, m)),

@@ -1348,7 +1348,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 | 命令 | 谁 | 作用 |
 |---|---|---|
-| `claim` / `heartbeat` / `finish` | 成员 / 租约持有人 | 租约：30–3600 秒；`finish` 报告花费和结果，可带一条笔记 |
+| `claim` / `heartbeat` / `finish` | 成员 / 租约持有人；释放另有令牌背后的本人、带 `maintain` 的 owner | 租约：30–3600 秒；`finish` 报告花费和结果，可带一条笔记。会话没有 `mdc done` 就停下时，它的租约要到期才放开；本人或 owner 可以提前释放（`outcome: released`、`spent: 0`，2026-10-15 3a 试点中补上） |
 | `note` | 成员 | 在目标上留一条尝试笔记（1–500 字符；保留最近 50 条） |
 | `edit_note`、`delete_note` | 笔记作者（人可以改自己委托令牌的笔记）；`delete_note` 另有 owner | 按 `{actor, at}` 找到一条笔记，改写正文（记 `edited`）或删除；owner 的令牌删别人的笔记需要 `maintain` |
 | `submit`、`resolve`、`import`、`submit_node`、`attach`、`sync` | 成员（`attach` 还需要分支的 editor 权限） | 后台作业；`submit` 可带 `description`，吸收草图时为新前提登记陈述（§4.11） |

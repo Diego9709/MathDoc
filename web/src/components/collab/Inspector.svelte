@@ -75,6 +75,11 @@
                 <button disabled={c.busy || !!c.frozen} onclick={() => void c.run({ type: "heartbeat", attempt: a.id, epoch: a.epoch, ttl })}>Extend</button>
                 <button disabled={c.busy || !!c.frozen} onclick={() => void c.run({ type: "finish", attempt: a.id, epoch: a.epoch, spent: 0, outcome: "released" })}>Release</button>
               </div>
+            {:else if a.actor.split("/")[0] === c.me || c.isOwner}
+              <!-- A lease a stopped session left: its token's person, or the owner, frees the task. -->
+              <div class="controls">
+                <button title="Free the task now instead of waiting for the lease to expire; the holder's work is kept" disabled={c.busy || !!c.frozen} onclick={() => void c.run({ type: "finish", attempt: a.id, epoch: a.epoch, spent: 0, outcome: "released" })}>Release</button>
+              </div>
             {/if}
           {:else if c.solved.has(t.goal)}
             <p class="muted">Done: active certificates prove this goal.</p>
