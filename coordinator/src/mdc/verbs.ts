@@ -854,32 +854,9 @@ export async function check(ctx: VerbContext, file: string | undefined) {
   } catch (e) {
     if (!(e instanceof MdcError && e.reason === "not_pulled")) throw e;
     const { database, home } = scope(ctx, "check");
-    const board = await liveBoard(ctx.client, database, home);
-    project = board.id;
-    if (board.mode === "modules") {
-      // A scratch file of a module project, e.g. `#check @name` lines: compiled on its own as
-      // `Scratch.lean`, so it may import the base and nothing else.
-      const out = await ctx.client.request(
-        "POST",
-        projectPath(project, "/check"),
-        {
-          files: {
-            "Scratch.lean": await readFile(resolve(ctx.cwd, file), "utf8"),
-          },
-        },
-      );
-      const lines = leanMessages(out.diagnostics).replaceAll(
-        "Scratch.lean:",
-        `${file}:`,
-      );
-      return {
-        file,
-        ok: out.ok === true,
-        compiled: out.compiled === true,
-        diagnostics: out.diagnostics,
-        ...(lines ? { messages: lines } : {}),
-      };
-    }
+    // A scratch file, e.g. `#check` lines: LeanGround's resident checker on the base, in a
+    // module project too (a sandboxed build would import Mathlib afresh every time).
+    project = (await liveBoard(ctx.client, database, home)).id;
   }
   const source = await readFile(resolve(ctx.cwd, file), "utf8");
   const out = await ctx.client.request("POST", projectPath(project, "/check"), {

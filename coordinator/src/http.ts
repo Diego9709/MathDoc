@@ -651,14 +651,21 @@ export function server(
         send(res, 200, await previewWriteback(lean, load, b, child));
         return;
       }
+      // A draft check: `{source}`, one Lean file, goes to LeanGround's resident checker on the
+      // project's base (§2.7.8); in a module project, `{files, …}` is compiled in its sandbox.
+      const checkBody =
+        operation === "check" && !child && method === "POST"
+          ? await body(req, CONTRIBUTION_LIMIT)
+          : undefined;
       if (
-        operation === "check" &&
-        !child &&
-        method === "POST" &&
-        b.mode === "modules"
+        checkBody !== undefined &&
+        b.mode === "modules" &&
+        !(checkBody && typeof checkBody === "object" && "source" in checkBody)
       ) {
         // docs/module-certification.md §5.4: LeanGround compiles the files in its sandbox and,
-        // given a goal, checks them as a contribution to it. Nothing is recorded.
+        // given a goal, checks them as a contribution to it. Nothing is recorded. A scratch
+        // file (`{source}`, e.g. `#check` lines) takes the resident checker below instead: a
+        // sandboxed build imports Mathlib afresh every time (60 s against 8.5 s, 3a pilot).
         requireScope(who, "work");
         const input = z
           .object({
@@ -668,7 +675,7 @@ export function server(
             root: z.string().min(1).max(200).optional(),
           })
           .strict()
-          .parse(await body(req, CONTRIBUTION_LIMIT));
+          .parse(checkBody);
         const goal =
           input.goal === undefined
             ? undefined
@@ -689,14 +696,14 @@ export function server(
         );
         return;
       }
-      if (operation === "check" && !child && method === "POST") {
+      if (checkBody !== undefined) {
         // §2.7.8: LeanGround checks a draft on the project's base. Nothing is recorded and no
         // certificate is made, so it does not count as a submission.
         requireScope(who, "work");
         const { source } = z
           .object({ source: z.string().min(1).max(2000000) })
           .strict()
-          .parse(await body(req));
+          .parse(checkBody);
         requireThat(b.base?.root_module, "environment_not_configured", 409);
         const out = checkResultSchema.parse(
           await lean.check(source, [String(b.base.root_module)]),
