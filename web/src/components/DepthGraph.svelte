@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from "svelte";
   import { Maximize2 } from "@lucide/svelte";
-  import type { FormalCodeStatus, GraphFull } from "../lib/types";
+  import type { GraphFull } from "../lib/types";
   import type { Theme } from "../lib/theme";
   import { api } from "../lib/api";
   import { shortFnode } from "../lib/format";
+  import { layoutDocument, type GraphLayout } from "../lib/collab-layout";
+  import { isDefinitionTone, nodeTone, TONES, toneLabel, type NodeTone } from "../lib/node-tone";
+  import DocumentGraph from "./DocumentGraph.svelte";
+  import ToneIcon from "./ToneIcon.svelte";
 
   interface Props {
     active: boolean;
@@ -23,7 +27,7 @@
     depth: number;
     inDegree: number;
     outDegree: number;
-    lean: FormalCodeStatus;
+    tone: NodeTone;
     baseRadius: number;
     order: number;
     x: number;
@@ -34,15 +38,16 @@
   let containerEl = $state<HTMLDivElement | null>(null);
   let nodes: SimNode[] = [];
   let nodeCount = $state(0);
-  const statusLabels = [
-    // Colors follow the local-check dimension; LeanGround certification shows per node.
-    ["no_code", "No Lean code"],
-    ["unverified", "Lean code"],
-    ["verified", "Verified"],
-  ] as const;
-  let statusCounts = $state<Record<FormalCodeStatus, number>>({
-    no_code: 0, unverified: 0, verified: 0,
-  });
+  // Colours follow the node page: LeanGround certification, a definition's registration.
+  const emptyCounts = () => Object.fromEntries(TONES.map((t) => [t, 0])) as Record<NodeTone, number>;
+  let statusCounts = $state<Record<NodeTone, number>>(emptyCounts());
+  /** Graphs this small are drawn as the proof graph is (DocumentGraph); larger ones on the canvas.
+   * Boxes are cards plus a bend per layer a long edge crosses. The imported proofs reach 2,773
+   * (a 294-file import closure), laid out in about 0.5 s (docs/external-proofs.md §8). */
+  const MAX_DOCUMENT_BOXES = 3000;
+  let documentData = $state.raw<GraphFull | null>(null);
+  let documentLayout = $state.raw<GraphLayout | null>(null);
+  let documentGraph = $state<{ fit: () => void; zoomBy: (factor: number) => void } | undefined>();
   let rafId = 0;
   let running = true;
   let loadError: string | null = $state(null);
@@ -59,9 +64,11 @@
   // Canvas cannot read CSS custom properties, so these mirror the accent tokens
   // in app.css. Keep them in step when the palette changes.
   const DARK_PALETTE = {
-    no_code: "#79828f",
-    unverified: "#f0b661",
-    verified: "#4fd6ae",
+    muted: "#79828f",
+    accent: "#7c8cff",
+    warning: "#f0b661",
+    done: "#4fd6ae",
+    error: "#ff6f85",
     outgoing: "79, 214, 174",
     incoming: "180, 140, 255",
     outline: "#eef1f7",
@@ -69,14 +76,28 @@
     label: "198, 205, 218",
   };
   const LIGHT_PALETTE = {
-    no_code: "#69727f",
-    unverified: "#96601a",
-    verified: "#0a7d64",
+    muted: "#69727f",
+    accent: "#4d5bd9",
+    warning: "#96601a",
+    done: "#0a7d64",
+    error: "#c8384d",
     outgoing: "10, 125, 100",
     incoming: "116, 64, 208",
     outline: "#0f1420",
     shortLabel: "90, 100, 116",
     label: "51, 60, 77",
+  };
+  /** A tone's colour, and whether its mark is filled (established) or a ring, as ToneIcon draws it. */
+  const TONE_STYLE: Record<NodeTone, { color: "muted" | "accent" | "warning" | "done" | "error"; filled: boolean }> = {
+    no_code: { color: "muted", filled: false },
+    imported: { color: "accent", filled: false },
+    not_submitted: { color: "muted", filled: false },
+    definition: { color: "muted", filled: false },
+    registered: { color: "done", filled: true },
+    insufficient: { color: "warning", filled: false },
+    derivable: { color: "accent", filled: true },
+    certified: { color: "done", filled: true },
+    problem: { color: "error", filled: true },
   };
   const MAX_NODE_RADIUS = 24;
   const SPATIAL_CELL_SIZE = 64;
@@ -146,16 +167,18 @@
       depth: node.depth,
       inDegree: 0,
       outDegree: 0,
-      lean: node.lean ?? "no_code",
+      tone: nodeTone(node),
       baseRadius: 6,
       order: 0,
       x: 0,
       y: 0,
     }));
     nodeCount = nodes.length;
-    const counts = { no_code: 0, unverified: 0, verified: 0 };
-    for (const node of nodes) counts[node.lean]++;
+    const counts = emptyCounts();
+    for (const node of nodes) counts[node.tone]++;
     statusCounts = counts;
+    documentLayout = layoutDocument(data.nodes.map((n) => ({ id: n.fnode, label: n.title })), data.edges, MAX_DOCUMENT_BOXES);
+    documentData = documentLayout ? data : null;
     nodesById = new Map(nodes.map((node) => [node.id, node]));
     computeMetadata(nodes, data.edges);
     applyStaticGraphLayout();
@@ -356,7 +379,7 @@
 
   function render() {
     const canvas = canvasEl;
-    if (!canvas) return;
+    if (!canvas || documentLayout) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const dpr = canvasDpr;
@@ -409,16 +432,32 @@
     }
 
     const labelStride = Math.max(1, Math.ceil(visibleNodes.length / 500));
-    const paths = { no_code: new Path2D(), unverified: new Path2D(), verified: new Path2D() };
+    // One path per tone; definitions are diamonds, the rest circles; rings until established.
+    const paths = new Map(TONES.map((tone) => [tone, new Path2D()]));
     for (const n of visibleNodes) {
       const r = nodeRadius(n, graphSelection);
-      const path = paths[n.lean];
-      path.moveTo(n.x + r, n.y);
-      path.arc(n.x, n.y, r, 0, 2 * Math.PI);
+      const path = paths.get(n.tone)!;
+      if (isDefinitionTone(n.tone)) {
+        path.moveTo(n.x, n.y - r);
+        path.lineTo(n.x + r, n.y);
+        path.lineTo(n.x, n.y + r);
+        path.lineTo(n.x - r, n.y);
+        path.closePath();
+      } else {
+        path.moveTo(n.x + r, n.y);
+        path.arc(n.x, n.y, r, 0, 2 * Math.PI);
+      }
     }
-    for (const status of ["no_code", "unverified", "verified"] as const) {
-      ctx.fillStyle = palette[status];
-      ctx.fill(paths[status]);
+    ctx.lineWidth = 2 / viewK;
+    for (const tone of TONES) {
+      const { color, filled } = TONE_STYLE[tone];
+      if (filled) {
+        ctx.fillStyle = palette[color];
+        ctx.fill(paths.get(tone)!);
+      } else {
+        ctx.strokeStyle = palette[color];
+        ctx.stroke(paths.get(tone)!);
+      }
     }
 
     const selectedNode = graphSelection ? nodesById.get(graphSelection) ?? null : null;
@@ -879,20 +918,24 @@
       ? ` Selected node: ${selectedFnode}.`
       : ""} Use Search to select a node.
   </p>
-  <table class="graph-legend" aria-label="Lean verification colors">
+  <table class="graph-legend" aria-label="Lean standing">
     <tbody>
-      {#each statusLabels as [status, label]}
+      {#each TONES.filter((tone) => statusCounts[tone] > 0) as tone (tone)}
         <tr>
-          <th scope="row"><span class={status}>{label}</span></th>
-          <td>{statusCounts[status].toLocaleString()}</td>
+          <th scope="row"><span><svg width="12" height="12" viewBox="-6.5 -6.5 13 13" aria-hidden="true"><ToneIcon {tone} /></svg>{toneLabel[tone]}</span></th>
+          <td>{statusCounts[tone].toLocaleString()}</td>
           <td class="count-divider">/</td>
           <td>{nodeCount.toLocaleString()}</td>
         </tr>
       {/each}
     </tbody>
   </table>
+  {#if documentLayout && documentData}
+    <DocumentGraph bind:this={documentGraph} data={documentData} layout={documentLayout} {selectedFnode} {onSelect} />
+  {/if}
   <canvas
     bind:this={canvasEl}
+    class:hidden={!!documentLayout}
     aria-hidden="true"
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
@@ -901,13 +944,13 @@
     onlostpointercapture={onLostPointerCapture}
     onpointerleave={onPointerLeave}
   ></canvas>
-  <button class="ctrl-btn reset-btn" onclick={() => fitToNodes()} title="Fit graph to view">
+  <button class="ctrl-btn reset-btn" onclick={() => documentGraph ? documentGraph.fit() : fitToNodes()} title="Fit graph to view">
     <Maximize2 size={14} strokeWidth={1.8} />
     <span>Fit graph</span>
   </button>
   <div class="zoom-cluster" role="group" aria-label="zoom controls">
-    <button class="ctrl-btn zoom-btn" onclick={() => zoomBy(1.35)} title="Zoom in" aria-label="Zoom in">+</button>
-    <button class="ctrl-btn zoom-btn" onclick={() => zoomBy(1 / 1.35)} title="Zoom out" aria-label="Zoom out">−</button>
+    <button class="ctrl-btn zoom-btn" onclick={() => documentGraph ? documentGraph.zoomBy(1.25) : zoomBy(1.35)} title="Zoom in" aria-label="Zoom in">+</button>
+    <button class="ctrl-btn zoom-btn" onclick={() => documentGraph ? documentGraph.zoomBy(1 / 1.25) : zoomBy(1 / 1.35)} title="Zoom out" aria-label="Zoom out">−</button>
   </div>
 </div>
 
@@ -917,10 +960,8 @@
   .graph-legend td { padding: .15rem 0; text-align: right; font-family: var(--mdc-mono); font-variant-numeric: tabular-nums; }
   .graph-legend td:last-child { text-align: left; }
   .graph-legend .count-divider { padding-inline: .15rem; color: var(--mdc-muted); }
-  .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
-  .graph-legend span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mdc-muted); }
-  .graph-legend .unverified::before { background: var(--mdc-warning); }
-  .graph-legend .verified::before { background: var(--mdc-accent-down); }
+  .graph-legend span { display: inline-flex; align-items: center; gap: .4rem; }
+  .graph-legend svg { overflow: visible; }
   .graph-container {
     position: relative;
     width: 100%;
@@ -928,6 +969,7 @@
     background-color: var(--mdc-bg);
     overflow: hidden;
   }
+  canvas.hidden { display: none; }
   canvas {
     position: absolute;
     inset: 0;

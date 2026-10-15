@@ -26,10 +26,12 @@
   }: Props = $props();
 
   function ariaLabel(n: NodePreview): string {
-    return `${n.title} (${shortFnode(n.fnode)})`;
+    return `${n.formalization.lean_role === "definition" ? "Definition " : ""}${n.title} (${shortFnode(n.fnode)})`;
   }
 
   let direction = $derived(accent === "up" ? "Upstream" : "Downstream");
+  /** A loaded node without such relations leaves the width to the editor. */
+  let rail = $derived(context !== null && items.length === 0);
   let depthWidth = $derived(items.reduce((width, item) => Math.max(width, String(item.depth).length + 1), 4));
   let query = $state("");
   let needle = $derived(query.trim().toLowerCase());
@@ -40,7 +42,7 @@
   const ESTIMATED_HEIGHT = 58;
   const measurements = new Map<string, number>();
   let measured = $state(0);
-  let list: HTMLUListElement;
+  let list = $state<HTMLUListElement>();
   let scrollTop = $state(0);
   let height = $state(0);
   let width = $state(0);
@@ -111,13 +113,13 @@
 
   let measuredWidth = 0;
   $effect(() => {
-    if (!width || width === measuredWidth) return;
+    if (!width || width === measuredWidth || !list) return;
     measuredWidth = width;
     untrack(() => {
       measurements.clear();
       // Retain exact heights for mounted rows even if their height did not
       // change; ResizeObserver only reports rows whose dimensions changed.
-      for (const row of list.querySelectorAll<HTMLLIElement>("li[data-fnode]")) {
+      for (const row of list!.querySelectorAll<HTMLLIElement>("li[data-fnode]")) {
         measurements.set(row.dataset.fnode!, row.getBoundingClientRect().height);
       }
       measured++;
@@ -132,7 +134,7 @@
   });
 
   async function moveFocus(event: KeyboardEvent, index: number) {
-    if (!virtual || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!virtual || !list || event.altKey || event.ctrlKey || event.metaKey) return;
     const target = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: matches.length - 1 }[event.key];
     if (target === undefined) return;
     event.preventDefault();
@@ -150,8 +152,8 @@
   }
 </script>
 
-<aside class="column" class:hidden={!active} data-accent={accent} aria-label={title} style:--depth-width={`${depthWidth}ch`}>
-  <header class="column-head" title={`${direction} — ${title.toLowerCase()}`}>
+<aside class="column" class:hidden={!active} class:rail data-accent={accent} aria-label={title} style:--depth-width={`${depthWidth}ch`}>
+  <header class="column-head" title={rail ? `No direct ${title.toLowerCase()}` : `${direction} — ${title.toLowerCase()}`}>
     <span class="relation-icon" aria-hidden="true">
       {#if accent === "up"}
         <ArrowUpRight size={13} strokeWidth={2.1} />
@@ -162,13 +164,14 @@
     <strong>{title}</strong>
     <span class="count">{needle ? `${matches.length}/${items.length}` : items.length}</span>
   </header>
+  {#if !rail}
   <label class="filter">
     <Search size={13} strokeWidth={1.8} aria-hidden="true" />
     <input type="search" bind:value={query} aria-label={`Filter ${title.toLowerCase()}`}
       placeholder="Filter by title or fnode..." spellcheck="false" />
   </label>
   <ul class="cards" class:virtual bind:this={list} bind:clientHeight={height} bind:clientWidth={width}
-    onscroll={() => scrollTop = list.scrollTop}>
+    onscroll={() => scrollTop = list!.scrollTop}>
     {#if virtual}<li class="spacer" aria-hidden="true" style:height={`${offsets[matches.length]}px`}></li>{/if}
     {#each visible as item, i (item.fnode)}
       <li use:measure data-fnode={item.fnode} data-index={start + i}
@@ -183,12 +186,12 @@
           onclick={() => onSelect(item.fnode)}
           onkeydown={(event) => moveFocus(event, start + i)}
         >
-          <span class="title">{item.title}</span>
+          <span class="title">{#if item.formalization.lean_role === "definition"}<span class="kind" title="A Lean definition: nothing to prove">def</span>{/if}{item.title}</span>
           <span class="card-meta">
             <span class="fnode">{shortFnode(item.fnode)}</span>
             <span class="depth" title={`depth ${item.depth}`}>d{item.depth}</span>
             <span class="meta-divider" aria-hidden="true"></span>
-            <FormalStatus language="Lean" status={item.formalization.lean} certification={item.formalization.lean_certification} compact />
+            <FormalStatus language="Lean" status={item.formalization.lean} certification={item.formalization.lean_certification} role={item.formalization.lean_role} compact />
             <FormalStatus language="Rocq" status={item.formalization.rocq} compact />
           </span>
         </button>
@@ -201,6 +204,7 @@
       </li>
     {/if}
   </ul>
+  {/if}
 </aside>
 
 <style>
@@ -219,6 +223,10 @@
     box-shadow: var(--mdc-shadow-lg);
   }
   .column.hidden { display: none; }
+  /* Without relations, only the head remains, as a narrow rail with a vertical label. */
+  .column.rail { flex: 0 0 auto; min-width: 0; width: 42px; }
+  .column.rail .column-head { flex-direction: column; gap: 0.6rem; min-height: 0; padding: 0.75rem 0; border-bottom: 0; }
+  .column.rail .column-head strong { flex: 0 0 auto; writing-mode: vertical-rl; }
   /* Compact single-line header: direction is carried by the arrow, not a
      second stacked label. */
   .column-head {
@@ -344,6 +352,19 @@
     line-height: 1.35;
     letter-spacing: var(--mdc-tracking-tight);
     word-break: break-word;
+  }
+  .kind {
+    display: inline-block;
+    margin-right: 0.4rem;
+    padding: 0 0.3rem;
+    color: var(--mdc-dim);
+    border: 1px solid var(--mdc-border-strong);
+    border-radius: 4px;
+    font-family: var(--mdc-mono);
+    font-size: var(--mdc-text-2xs);
+    font-weight: 500;
+    line-height: 1.35;
+    vertical-align: 1px;
   }
   .card-meta {
     display: flex;

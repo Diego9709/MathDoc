@@ -41,10 +41,18 @@ work:       pull GOAL [--branch B] [-o FILE] [--ttl S] [--allocation N] [--with 
             check FILE                 (LeanGround checks it now: Lean's messages; no submission)
             done [FILE] [--spent N] [--outcome O] [--note TEXT]
             note FILE|GOAL -m TEXT     (what was tried, where it got stuck)
+                                       DESCRIPTION, notes: Markdown, math in $…$ or $$…$$
             refute GOAL [pull flags]   (pull the goal's negation; proving it marks GOAL false)
             next [--branch B] [-n N] [--claim]   (the goals most worth working on; --claim pulls the first)
             lemma QUERY... [--kind theorem|definition|all] [-n N]   (library declarations by name, in the project's base)
             mcp [--dir DIR]            (the work commands as MCP tools over stdio)
+external:   external list | external new DATABASE --source SOURCE --config NAME [--commit SHA]
+            external show [DATABASE] | external check [DATABASE] [--wait] [--timeout S]
+            external rebuild [DATABASE]
+                                       (proofs imported from an upstream repository, checked by
+                                        LeanGround with Comparator; DATABASE defaults to -p's;
+                                        rebuild rewrites the nodes at the import's commit, the
+                                        checks stay)
 tokens:     token new NAME [--scope work,maintain,edit] [--expires 30d|12h|ISO-DATE]
             token list | token revoke NAME   (delegated tokens act as YOU/NAME)
             (GOAL: a GoalKey, a unique prefix of 8+ hex digits, a node title or UUID, or the
@@ -277,6 +285,40 @@ export async function main(
             ? { expires_at: expiry(expires, io.now ?? Date.now) }
             : {}),
         });
+      }
+      break;
+    }
+    case "external": {
+      // External proof imports (docs/external-proofs.md §3.3).
+      const database = () =>
+        args[1] ?? need(project, "DATABASE (or -p DATABASE/BRANCH)").split("/")[0];
+      if (args[0] === "list") return request("GET", "/api/imports");
+      if (args[0] === "new")
+        return request("POST", "/api/imports", {
+          database: need(args[1], "DATABASE"),
+          source: need(flag("--source"), "--source SOURCE"),
+          config: need(flag("--config"), "--config NAME"),
+          ...(flag("--commit") ? { commit: flag("--commit") } : {}),
+        });
+      if (args[0] === "show")
+        return request("GET", `/api/imports/${encodeURIComponent(database())}`);
+      if (args[0] === "rebuild")
+        return request("POST", `/api/imports/${encodeURIComponent(database())}/rebuild`);
+      if (args[0] === "check") {
+        const db = encodeURIComponent(database());
+        let check = await request("POST", `/api/imports/${db}/checks`);
+        if (!flags["--wait"]) return check;
+        const sleep = io.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+        const now = io.now ?? Date.now;
+        const deadline = now() + Number(flag("--timeout") ?? 14400) * 1000;
+        while (["submitting", "queued", "running"].includes(check.status)) {
+          if (now() > deadline)
+            throw new MdcError("timeout", `check ${check.id} is still ${check.status}`);
+          await sleep(10000);
+          const all = await request("GET", `/api/imports/${db}`);
+          check = all.checks.find((c: { id: string }) => c.id === check.id) ?? check;
+        }
+        return check;
       }
       break;
     }

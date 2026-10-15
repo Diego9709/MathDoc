@@ -17,6 +17,7 @@ import {
   env,
   isolated,
   ready,
+  removeDatabases,
   type Actor,
 } from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
@@ -174,6 +175,20 @@ async function flow(leanground: { url: string; token: string }) {
         pending.decompositions[0].premises.map((x: { name: string }) => x.name),
       ],
       ["unfold double", "bob", "double_add", ["double_eq"]],
+    );
+    // The review view reads the decomposition's source with the definitions it uses.
+    const read = await http.ok(
+      "alice",
+      "GET",
+      `/api/coordination/projects/${id}/facts/${d1.certificate}`,
+    );
+    assert.match(read.source, /theorem double_eq/);
+    assert.deepEqual(
+      read.definition_sources.map((x: { name: string; source: string }) => [
+        x.name,
+        x.source.trim(),
+      ]),
+      [["double", D.trim()]],
     );
     await assert.rejects(
       alice(["review", d1.certificate.slice(0, 10)]),
@@ -403,6 +418,7 @@ async function flow(leanground: { url: string; token: string }) {
       /404/,
     );
   } finally {
+    await removeDatabases(db);
     await dep.close();
     await schema.close();
   }

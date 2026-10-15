@@ -67,7 +67,10 @@ export const TOOLS = [
       properties: {
         file,
         text: { type: "string", description: "The whole edited goal file" },
-        description: { type: "string", description: "What the split does" },
+        description: {
+          type: "string",
+          description: "What the split does, for its review: Markdown, math in $…$ or $$…$$",
+        },
         wait: { type: "boolean" },
       },
       required: ["file", "text", "description"],
@@ -119,7 +122,11 @@ export const TOOLS = [
           type: "string",
           enum: ["submitted", "no_progress", "execution_failed", "released"],
         },
-        note: { type: "string", maxLength: 500 },
+        note: {
+          type: "string",
+          maxLength: 500,
+          description: "What was learned: Markdown, math in $…$",
+        },
       },
       required: ["file"],
     },
@@ -127,13 +134,17 @@ export const TOOLS = [
   {
     name: "note",
     description:
-      "Keep a note on a goal (what was tried, where it got stuck) for whoever works on it next.",
+      "Keep a note on a goal (what was tried, where it got stuck) for whoever works on it next. Markdown, with math in $…$ (the web page typesets it; bare TeX such as p^{k} stays plain text).",
     inputSchema: {
       type: "object",
       properties: {
         file,
         goal: { type: "string", description: "A goal reference, if no file" },
-        text: { type: "string", maxLength: 500 },
+        text: {
+          type: "string",
+          maxLength: 500,
+          description: "Markdown, math in $…$",
+        },
       },
       required: ["text"],
     },

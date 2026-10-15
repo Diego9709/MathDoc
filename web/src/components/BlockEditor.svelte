@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, onDestroy, tick, untrack } from "svelte";
   import {
     AlertTriangle,
     ChevronDown,
@@ -11,6 +11,7 @@
   } from "@lucide/svelte";
   import { editor as Monaco, Uri, KeyMod, KeyCode } from "monaco-editor";
   import { loadSourceLanguage, setMonacoTheme, sourceOptions, renderSource } from "../lib/monaco";
+  import { applyMarkdownCommand, bindMarkdownKeys } from "../lib/markdown-monaco";
   import { nativeMonacoScroll } from "../lib/monaco-scroll";
   import type { NodeDetail, SrcBlock } from "../lib/types";
   import { api } from "../lib/api";
@@ -21,6 +22,7 @@
   import LatexImports from "./LatexImports.svelte";
   import LatexPreview from "./LatexPreview.svelte";
   import MarkdownPreview from "./MarkdownPreview.svelte";
+  import MarkdownToolbar from "./MarkdownToolbar.svelte";
   import { removeDraft, setDraftDirty, trackMutation } from "../lib/unsaved";
   import { latexAutocomplete } from "../lib/latex-completion-widget";
 
@@ -55,7 +57,9 @@
   let lastSavedDoc = "";
   let error: string | null = $state(null);
   let expanded = $state(true);
-  let previewing = $derived(block.srctype === "latex" ? latexPreview : block.srctype === "text" && textPreview);
+  /** A text block opened empty (e.g. just added) has nothing to read, so it opens in the editor. */
+  let editEmpty = $state(untrack(() => block.srctype === "text" && !block.content.trim()));
+  let previewing = $derived(block.srctype === "latex" ? latexPreview : block.srctype === "text" && textPreview && !editEmpty);
   let showPreview = $state(false);
   let latex = $state<LatexSession | null>(null);
   /** A text block's current draft, which its Markdown preview shows. */
@@ -91,6 +95,7 @@
         suggestFontSize: 12, suggestLineHeight: 28, suggest: {showIcons: false, showStatusBar: false},
       });
       disposeScroll = nativeMonacoScroll(editorView, scroller);
+      if (block.srctype === "text") bindMarkdownKeys(editorView);
       const fit = () => scroller.style.setProperty('--source-height', `${editorView!.getContentHeight()}px`);
       editorView.onDidContentSizeChange(fit); fit();
       model.onDidChangeContent(() => {
@@ -200,6 +205,7 @@
   function toggleExpand() { expanded = !expanded; }
   function togglePreview() {
     if (block.srctype === "latex") latexPreview = !latexPreview;
+    else if (editEmpty) { editEmpty = false; textPreview = true; }
     else textPreview = !textPreview;
   }
 
@@ -259,6 +265,9 @@
     <button class="delete" onclick={onDelete} disabled={saving || deleting} title="Delete block" aria-label="Delete block"><Trash2 size={14} strokeWidth={1.8} /></button>
   </header>
   {#if latex && expanded}<LatexImports imports={latex.context?.imports ?? null} />{/if}
+  {#if block.srctype === "text" && expanded && !showPreview}
+    <div class="markdown-tools"><MarkdownToolbar disabled={!ready} onCommand={(c) => { if (editorView) applyMarkdownCommand(editorView, c); }} /></div>
+  {/if}
   <div class="editor-scroll" class:pending={!ready} class:collapsed={!expanded || showPreview} inert={deleting || !ready || !expanded || showPreview} bind:this={scroller}>
     <div class="editor-size"><div class="editor-host" bind:this={host}></div></div>
   </div>
@@ -281,6 +290,7 @@
 </article>
 
 <style>
+  .markdown-tools { flex-shrink:0; padding:.15rem .45rem; border-bottom:1px solid var(--mdc-border); background:var(--mdc-panel); }
   .editor-scroll { min-height:0; height:clamp(10rem, var(--source-height, 10rem), 100cqh); overflow:auto; }
   .editor-scroll.collapsed { height:0; visibility:hidden; overflow:hidden; }
   /* Safari can omit source glyphs inserted into a visibility:hidden scroller. */

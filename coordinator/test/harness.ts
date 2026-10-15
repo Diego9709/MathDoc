@@ -50,12 +50,30 @@ export async function isolated() {
 }
 
 /**
+ * Deletes the TerminusDB databases a test made. The test instance is often the one a local
+ * server lists projects from, so a database left behind shows up there as a project.
+ */
+export async function removeDatabases(...names: string[]) {
+  const terminus = new Terminus({
+    url: env.terminus!,
+    user: "admin",
+    password: env.terminusPassword!,
+  });
+  for (const name of names)
+    await terminus
+      .database(name, "main")
+      .deleteDatabase()
+      .catch(() => {});
+}
+
+/**
  * One coordinator deployment: API process state and a worker. Recreated to simulate
  * restarts. `leanground` overrides the LeanGround service (tests with a contract double).
  */
 export async function deploy(
   url: string,
   leanground = { url: env.lean!, token: env.leanToken! },
+  extra: Partial<Config> = {},
 ) {
   const store = new Store(url);
   await store.migrate();
@@ -72,6 +90,7 @@ export async function deploy(
     terminusUser: "admin",
     terminusPassword: env.terminusPassword,
     webDir: "/nonexistent",
+    ...extra,
   };
   const http: Server = server(cfg, store, lean, new Documents());
   http.listen(0, "127.0.0.1");

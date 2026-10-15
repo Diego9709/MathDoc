@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { activeGoals, coordination, branchRoute, branchView, branchesNeeding, goalStatement, nextStep, openGoals, readOnlyReason, routeCloses, solvedGoals, spentBy, writtenBack, type Board, type Fact, type Run, type Writeback } from './coordination';
+import { ApiError } from './api';
+import { activeGoals, activeRoute, coordination, branchRoute, branchView, branchesNeeding, goalStatement, goalStatementBlock, nextStep, openGoals, proofTree, readOnlyReason, refusal, routeCloses, solvedGoals, spentBy, timeLeft, writtenBack, type Board, type Fact, type Run, type Writeback } from './coordination';
 
 const fact = (id: string, goal: string, premises: string[] = [], state: Fact['state'] = 'active'): Fact =>
   ({ id, goal, premises, trust: 'trusted', state, available: true });
@@ -96,6 +97,9 @@ describe('project boards in the browser', () => {
     expect(goalStatement(b, 'A')).toBe('a (n : Nat) : n = n');
     expect(goalStatement(b, 'B')).toBe('∀ (n : Nat), n = n');
     expect(goalStatement(b, 'C')).toBe('c');
+    // Laid out for reading, the type goes under the name and binders.
+    expect(goalStatementBlock(b, 'A')).toBe('a (n : Nat) :\n  n = n');
+    expect(goalStatementBlock(b, 'B')).toBe('∀ (n : Nat), n = n');
   });
   it('adds up the budget by agent identity, closed attempts as spent and open ones as reserved', () => {
     const attempt = (id: string, actor: string, spent: number, reserved: number, outcome?: string) =>
@@ -111,6 +115,82 @@ describe('project boards in the browser', () => {
       { actor: 'bob/agent-b', spent: 40, reserved: 0, attempts: 1 },
       { actor: 'bob/agent-a', spent: 30, reserved: 20, attempts: 2 },
     ]);
+  });
+});
+
+describe('the proof tree', () => {
+  const shape = (g: ReturnType<typeof proofTree>['root']): unknown =>
+    g && (g.repeat ? `${g.goal}*` : { [g.goal]: g.facts.map((t) => ({ [t.fact.id]: t.premises.map(shape) })) });
+  it('lists complete proofs first and expands a shared subgoal once', () => {
+    // T ⇐ A, B and T ⇐ A; A proved; B split into A again; a proposed split of T comes after the active ones.
+    const b = board([fact('t2', 'T', ['A']), fact('t1', 'T', ['A', 'B']), fact('a', 'A'), fact('b', 'B', ['A']), fact('tp', 'T', ['C'], 'proposed')]);
+    expect(shape(proofTree(b).root)).toEqual({ T: [
+      { t2: [{ A: [{ a: [] }] }] },
+      { t1: ['A*', { B: [{ b: ['A*'] }] }] },
+      { tp: [{ C: [] }] },
+    ] });
+  });
+  it('stops at cycles and lists goals the root does not reach', () => {
+    const b = board([fact('t', 'T', ['A']), fact('a', 'A', ['T']), fact('n', 'N'), fact('m', 'M', ['N'])]);
+    const tree = proofTree(b);
+    expect(shape(tree.root)).toEqual({ T: [{ t: [{ A: [{ a: ['T*'] }] }] }] });
+    // M reaches N, so N is shown under M and not again on its own.
+    expect(tree.others.map(shape)).toEqual([{ M: [{ m: [{ N: [{ n: [] }] }] }] }]);
+  });
+  it('expands a goal shared with a certificate not in use where it is used', () => {
+    // T ⇐ A, B; A has a complete proof and a retired split into X, reached first; B ⇐ X is active.
+    const b = board([fact('t', 'T', ['A', 'B']), fact('a1', 'A'), fact('a2', 'A', ['X'], 'retired'), fact('b', 'B', ['X']), fact('x', 'X')]);
+    expect(shape(proofTree(b).root)).toEqual({ T: [{ t: [
+      { A: [{ a1: [] }, { a2: ['X*'] }] },
+      { B: [{ b: [{ X: [{ x: [] }] }] }] },
+    ] }] });
+    // Reached only through a paused certificate, a goal is still expanded there.
+    b.facts.b.state = 'paused';
+    expect(shape(proofTree(b).root)).toEqual({ T: [{ t: [
+      { A: [{ a1: [] }, { a2: [{ X: [{ x: [] }] }] }] },
+      { B: [{ b: ['X*'] }] },
+    ] }] });
+  });
+});
+
+describe('the active route through the AND-OR graph', () => {
+  // T can be split two ways: t1 ⇐ A, B (A proved, B open) or t2 ⇐ C (C proved by c).
+  const b = board([fact('t1', 'T', ['A', 'B']), fact('t2', 'T', ['C']), fact('a', 'A'), fact('c', 'C'), fact('b2', 'B', ['D'])]);
+  it('takes a provable way when nothing is chosen, as an assembly would', () => {
+    const r = activeRoute(b, {});
+    expect([r.choice.get('T'), r.closes, r.open]).toEqual(['t2', true, []]);
+    expect([...r.goals].sort()).toEqual(['C', 'T']);
+  });
+  it('follows a pick, and a draft over the pick, down to what is still open', () => {
+    const picked = activeRoute(b, { T: 't1' });
+    expect([...picked.goals].sort()).toEqual(['A', 'B', 'D', 'T']);
+    expect([...picked.facts].sort()).toEqual(['a', 'b2', 't1']);
+    // B is open through b2 ⇐ D, and D has no certificate at all.
+    expect([picked.closes, picked.open]).toEqual([false, ['T', 'B', 'D']]);
+    const drafted = activeRoute(b, { T: 't1' }, { T: 't2' });
+    expect([drafted.choice.get('T'), drafted.closes]).toEqual(['t2', true]);
+  });
+  it('chooses only active certificates', () => {
+    const paused = board([fact('t1', 'T', ['A'], 'paused'), fact('t2', 'T', ['B'])]);
+    expect(activeRoute(paused, { T: 't1' }).choice.get('T')).toBe('t2');
+    expect(activeRoute(paused, {}, { T: 't1' }).choice.get('T')).toBe('t2');
+  });
+});
+
+describe('refused commands', () => {
+  it('say when the server is older than the page', () => {
+    const old = new ApiError('invalid_request', 400, { reason: 'invalid_request', issues: [{ path: ['type'], message: 'Invalid discriminator value' }] });
+    expect(refusal(old, { type: 'delete_note', goal: 'G', note: { actor: 'a', at: 1 } })).toMatch(/older version of MathDoc that does not know “delete_note”/);
+    // Other refusals keep the server's reason.
+    expect(refusal(new ApiError('note_author_required', 403, { reason: 'note_author_required' }), { type: 'sync' })).toBe('note_author_required');
+    expect(refusal(new ApiError('invalid_request', 400, { reason: 'invalid_request', issues: [{ path: ['text'] }] }), { type: 'sync' })).toBe('invalid_request');
+  });
+});
+
+describe('claims', () => {
+  it('reads the time left in seconds only in the last minute', () => {
+    const at = (s: number) => timeLeft(1_000_000 + s * 1000, 1_000_000);
+    expect([at(-5), at(42), at(1848), at(3600), at(5430)]).toEqual(['0 s left', '42 s left', '31 min left', '1 h left', '1 h 31 min left']);
   });
 });
 

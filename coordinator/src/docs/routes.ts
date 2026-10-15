@@ -26,6 +26,8 @@ export interface DocsOptions {
   readBody: (req: IncomingMessage, limit?: number) => Promise<unknown>;
   /** Coordination projects bound to a branch, for the certification dimension. */
   boards?: (database: string, branch: string) => Promise<Board[]>;
+  /** Called after a database is removed, to drop what other services keep for it. */
+  removed?: (database: string, actor: string) => Promise<void>;
 }
 
 /** A delegated token may only do what its scopes name. */
@@ -173,6 +175,35 @@ export class DocsBackend {
         service.shutdown();
         this.branches.delete(key);
       }
+  }
+
+  /**
+   * Create a database owned by `actor` and import `graph` (the export format) into its empty main
+   * branch; external proof imports use it (docs/external-proofs.md §3.3). Admins only, as `init`.
+   */
+  async createWithGraph(actor: string, database: string, graph: unknown) {
+    validateName(database);
+    if (this.o.actors[principalOf(actor)]?.admin !== true)
+      throw new DocError("database create requires one of: admin", 403);
+    await this.terminus.database(database, "main").initialize(actor);
+    await this.workspaces.create(database, actor);
+    const reply = await this.branch(database, "main").handle({
+      method: "POST",
+      route: "/import",
+      query: new URLSearchParams(),
+      headers: {},
+      body: async () => graph,
+      actor,
+      boards: [],
+    });
+    return reply.body;
+  }
+
+  /** Rewrites a database's nodes from a rebuilt import graph, keeping nodes it does not list. */
+  async upsertGraph(actor: string, database: string, nodes: unknown[]) {
+    if (this.o.actors[principalOf(actor)]?.admin !== true)
+      throw new DocError("import rebuild requires one of: admin", 403);
+    return this.branch(database, "main").upsert(nodes, "Rebuild import", actor);
   }
 
   /** Returns false when the request is not a document request. */
@@ -416,6 +447,8 @@ export class DocsBackend {
         this.forget(database);
         await db.deleteDatabase();
         await this.workspaces.drop(database);
+        // What else belongs to the database: its boards, environment and import record.
+        await this.o.removed?.(database, actor);
         return { database, deleted: true };
       }
       case "new_branch": {

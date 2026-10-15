@@ -471,7 +471,31 @@ test(
         lean: "unverified",
         rocq: "no_code",
         lean_certification: { status: "not_submitted" },
+        lean_role: "theorem",
       });
+      // A block of definitions only is a definition, as a proof request would bind it.
+      const withDef = await call(
+        "eddy",
+        "PUT",
+        api(`/node/${a.fnode}/block/lean`),
+        { content: "def two : Nat := 2\n" },
+        withLean.body.revision,
+      );
+      assert.equal(withDef.body.formalization.lean_role, "definition");
+      const full = await call("eddy", "GET", api("/graph/full"));
+      const listed = full.body.nodes.find(
+        (n: { fnode: string }) => n.fnode === a.fnode,
+      );
+      assert.equal(listed.lean_role, "definition");
+      assert.equal(listed.certification, "not_submitted");
+      const withTheorem = await call(
+        "eddy",
+        "PUT",
+        api(`/node/${a.fnode}/block/lean`),
+        { content: "theorem t : True := trivial\n" },
+        withDef.body.revision,
+      );
+      assert.equal(withTheorem.status, 200);
       assert.equal(
         (await call("eddy", "POST", api("/branches"), { name: "fork" })).status,
         200,

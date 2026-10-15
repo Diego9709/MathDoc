@@ -80,7 +80,7 @@ resolves the statement of `double_add` and gives the open goal a `prove` task.
 Wait until `proof status` shows `"ready": true`. `proof submit` on another
 branch attaches that branch to the same project. In the browser, the node's
 **Submit to LeanGround** button does the same, and the toolbar's
-**Collaboration** dialog shows the project.
+**Collaboration** button opens the project's collaboration page.
 
 ## Split the goal as an agent
 

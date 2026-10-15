@@ -20,6 +20,7 @@ import {
 export { UNCHECKED } from "./domain.js";
 import { ENVIRONMENT_MIGRATION } from "./proof.js";
 import { TOKEN_MIGRATION } from "./identity.js";
+import { IMPORT_MIGRATION } from "./imports.js";
 export interface Job {
   id: string;
   project: string;
@@ -49,7 +50,7 @@ CREATE INDEX IF NOT EXISTS mdc_attempt_open ON mdc_attempt(project) WHERE open;
 INSERT INTO mdc_task SELECT p.id, t.key, t.value FROM mdc_project p, jsonb_each(p.body->'tasks') t ON CONFLICT DO NOTHING;
 INSERT INTO mdc_attempt SELECT p.id, a.key, NOT (a.value ? 'outcome'), a.value FROM mdc_project p, jsonb_each(p.body->'attempts') a ON CONFLICT DO NOTHING;
 UPDATE mdc_project SET body = body - 'tasks' - 'attempts' - 'spent', meta = NULL WHERE body ? 'tasks' OR body ? 'attempts';
-${ENVIRONMENT_MIGRATION}${TOKEN_MIGRATION}`;
+${ENVIRONMENT_MIGRATION}${TOKEN_MIGRATION}${IMPORT_MIGRATION}`;
 // Boards that take part in scheduling: not a stage 4 proof request, not superseded.
 const LIVE = `NOT (p.body ? 'request') AND NOT COALESCE((p.body->'project'->>'superseded')::boolean,false)`;
 
@@ -425,12 +426,36 @@ export class Store {
     for (const id of ids) {
       const loaded = (await this.load(c, id, true))!;
       const b = loaded.board;
+      if (b.project!.removed) continue;
       const superseded = b.project!.environment_id !== environmentId;
       if (Boolean(b.project!.superseded) === superseded) continue;
       if (superseded) b.project!.superseded = true;
       else delete b.project!.superseded;
       await this.save(c, loaded, actor, superseded ? "superseded" : "revived");
     }
+  }
+  /**
+   * The database was removed: its boards stop syncing and can never be revived. They keep their
+   * history under a tombstone name (`~` cannot occur in a database name), which also frees the
+   * (database, environment) scope for a database later created under the same name.
+   */
+  async retireDatabase(c: pg.PoolClient, database: string, actor: string) {
+    const ids = (
+      await c.query(
+        "SELECT id FROM mdc_project WHERE body->'project'->>'database'=$1 ORDER BY id",
+        [database],
+      )
+    ).rows.map((r) => r.id as string);
+    const at = Math.floor(await this.now(c));
+    for (const id of ids) {
+      const loaded = (await this.load(c, id, true))!;
+      const p = loaded.board.project!;
+      p.superseded = true;
+      p.removed = { database, at, by: actor };
+      p.database = `${database}~removed~${at}`;
+      await this.save(c, loaded, actor, "removed");
+    }
+    return ids;
   }
   private async now(c: Db) {
     return Number(

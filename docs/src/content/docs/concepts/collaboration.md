@@ -4,7 +4,7 @@ title: Collaboration
 
 A database's **project** lets several people and agents prove one theorem
 together. Everyone uses the same board commands, whether through the browser's
-**Collaboration** dialog, the
+**Collaboration** page, the
 [`mdc` commands](../../reference/workspace-commands/#proof-work) or the
 [HTTP API](../../reference/agents/). LeanGround checks every proof; MathDoc keeps
 track of goals, tasks, budgets, notes, reviews, which decompositions each branch
@@ -78,8 +78,10 @@ branch's **route** may still be open: see [Routes](#routes-and-picks).
 
 ## Tasks, leases and budgets
 
-Every new goal gets a `prove` task; the owner can add `decompose` or `formalize`
-tasks (one open task per goal and kind). Work on a task follows a lease:
+Every new goal gets a `prove` task, whose holder may prove the goal or split it;
+the owner can add `decompose` or `formalize` tasks (one open task per goal and
+kind) with the `task` command. `mdc next` recommends and `mdc pull` claims only
+`prove` tasks, so the others are taken by hand. Work on a task follows a lease:
 
 1. `claim` a ready task with an **allocation** (budget reserved) and a lease
    time of 30–3600 seconds (default 300). Only one participant holds a task's
@@ -171,11 +173,13 @@ active.
 LeanGround keeps only successful certificates, so what did not work is kept on
 the goal instead: any member working on it can add a **note** (what was tried,
 where it got stuck), with the `note` command, with `finish`, with `mdc note` or
-`mdc done --note`, or with **Add note** in the browser's **Task board**. Each goal
-keeps its latest 50 notes of at most 500 characters, with who wrote them and
-when. `mdc pull` writes the latest 20 into the goal file; `mdc goal` and the task
-board show them all. MathDoc itself adds notes, as `mathdoc`, when it refutes a
-goal.
+`mdc done --note`, or in the goal's **Notes** tab on the browser's collaboration
+page. Each goal keeps its latest 50 notes of at most 500 characters, with who
+wrote them and when. `mdc pull` writes the latest 20 into the goal file; `mdc
+goal` and the Notes tab show them all. A note's author changes it with
+`edit_note` and removes it with `delete_note`; a person may do both for the notes
+of their delegated tokens, and the owner may remove any note. MathDoc itself adds
+notes, as `mathdoc`, when it refutes a goal.
 
 ## Refutation
 

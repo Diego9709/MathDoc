@@ -5,7 +5,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { client, deploy, env, isolated, type Actor } from "./harness.js";
+import {
+  client,
+  deploy,
+  env,
+  isolated,
+  removeDatabases,
+  type Actor,
+} from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 import { newProjectBoard, type Board } from "../src/domain.js";
 
@@ -331,6 +338,7 @@ test(
       assert.equal((await command(id, "alice", { type: "sync" })).status, 200);
       assert.equal((await submit("alice", "main", r, "alice-3")).body.id, id);
     } finally {
+      await removeDatabases(db);
       await dep.close();
       await lean.close();
       await schema.close();

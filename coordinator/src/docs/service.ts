@@ -25,8 +25,10 @@ import type { Action } from "./workspace.js";
 import type { Board } from "../domain.js";
 import {
   certificationLookup,
+  importedSource,
   type CertificationLookup,
 } from "../certification.js";
+import { DEFINITION_KINDS, scan } from "../lean-source.js";
 
 export interface Reply {
   status?: number;
@@ -102,12 +104,52 @@ const leanWire = (p: import("./model.js").LeanProject) =>
 const formal = (node: Node, language: string) =>
   nodeSource(node, language) !== undefined ? "unverified" : "no_code";
 
+type LeanRole = "definition" | "theorem";
+/** What a node's Lean block declares before any conversion binds it: its `lean_role`
+ * metadata, else a theorem when it proves anything, else a definition when it defines
+ * something; null without a Lean block, for an imported upstream file, or when the scanner
+ * refuses it. Snapshots keep their
+ * nodes, so a block is scanned once. */
+const scanned = new WeakMap<Node, LeanRole | null>();
+function scannedRole(node: Node): LeanRole | null {
+  if (scanned.has(node)) return scanned.get(node)!;
+  // An imported upstream file is neither: it is shown, not converted.
+  const block = importedSource(node)
+    ? undefined
+    : node.blocks.find((b) => b.srctype === "lean");
+  let role: LeanRole | null = null;
+  const declared = block?.metadata.lean_role;
+  if (declared === "definition" || declared === "theorem") role = declared;
+  else if (block) {
+    const s = scan(block.content);
+    if (!s.rejection)
+      role = s.decls.some((d) => d.kind === "theorem" || d.kind === "lemma")
+        ? "theorem"
+        : s.decls.some((d) => DEFINITION_KINDS.includes(d.kind))
+          ? "definition"
+          : null;
+  }
+  scanned.set(node, role);
+  return role;
+}
+
 export class BranchService {
   private snapshot: Snapshot | null = null;
   private lock = new Lock();
   /** Set per call under the lock. */
-  private certification: CertificationLookup = (n) =>
-    nodeSource(n, "lean") !== undefined ? { status: "not_submitted" } : null;
+  private certification: CertificationLookup = Object.assign(
+    (n: Node) =>
+      nodeSource(n, "lean") !== undefined
+        ? ({ status: "not_submitted" } as const)
+        : null,
+    { role: () => null },
+  );
+  /** The role the shown conversion binds the node to, else what its Lean block declares. */
+  private leanRole(n: Node): LeanRole | null {
+    return nodeSource(n, "lean") === undefined
+      ? null
+      : (this.certification.role(n) ?? scannedRole(n));
+  }
   readonly latex = new LatexService();
 
   constructor(
@@ -161,6 +203,7 @@ export class BranchService {
         // docs/mathdoc.md §4.5: formal certification comes from LeanGround, separate from the local
         // check (which this backend never performs).
         lean_certification: this.certification(n),
+        lean_role: this.leanRole(n),
       },
     };
   }
@@ -203,6 +246,17 @@ export class BranchService {
     if (latex && latex[2] === "preview" && method === "POST")
       return this.latexPreview(call, decodeURIComponent(latex[1]));
     return this.lock.run(() => this.locked(call));
+  }
+
+  /** Writes `nodes` over the branch in one commit; nodes not listed stay. An import rebuilt at
+   * its commit keeps its node ids, so this adds its new nodes and rewrites the others. */
+  upsert(values: unknown[], message: string, actor: string) {
+    const nodes = values.map(parseNode);
+    return this.lock.run(async () => {
+      const s = await this.read();
+      await this.save(s, nodes, message, actor);
+      return s.report();
+    });
   }
 
   private async locked(call: Call): Promise<Reply> {
@@ -261,7 +315,13 @@ export class BranchService {
         body: {
           nodes: s
             .values()
-            .map((n) => ({ ...this.summary(s, n), lean: formal(n, "lean") })),
+            .map((n) => ({
+              ...this.summary(s, n),
+              lean: formal(n, "lean"),
+              lean_role: this.leanRole(n),
+              // The certification status only: the graph colours by it, as the node page does.
+              certification: this.certification(n)?.status ?? null,
+            })),
           edges,
         },
       };

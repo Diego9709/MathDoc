@@ -3,7 +3,8 @@
   import { renderMarkdown } from '../lib/markdown';
   import { chainEditorScroll } from '../lib/editor-scroll';
 
-  let { source }: { source: string } = $props();
+  // compact: inline in a dialog, e.g. a decomposition's description; no pane padding or scroll chaining.
+  let { source, compact = false }: { source: string; compact?: boolean } = $props();
   let host = $state<HTMLDivElement>();
   const html = $derived(renderMarkdown(source));
   $effect(() => {
@@ -13,7 +14,11 @@
 </script>
 
 <!-- renderMarkdown sanitizes the HTML a text block may contain. -->
-<div class="markdown-preview" bind:this={host} use:chainEditorScroll>{@html html}</div>
+{#if compact}
+  <div class="markdown-preview compact" bind:this={host}>{@html html}</div>
+{:else}
+  <div class="markdown-preview" bind:this={host} use:chainEditorScroll>{@html html}</div>
+{/if}
 
 <style>
   .markdown-preview { min-height:0; overflow:auto; padding:1rem 1.4rem; color:var(--mdc-fg); font-family:var(--mdc-font); font-size:.9375rem; line-height:1.7; overflow-wrap:anywhere; }
@@ -39,4 +44,6 @@
   .markdown-preview :global(.latex-math[data-display="true"]) { display:block; overflow-x:auto; margin:.6em 0; font-size:1.1em; }
   .markdown-preview :global(.latex-math[aria-busy="true"]) { visibility:hidden; }
   .markdown-preview :global(.latex-error) { color:var(--mdc-error); }
+  .markdown-preview.compact { overflow:visible; padding:0; font-size:inherit; line-height:1.6; }
+  .markdown-preview.compact :global(:is(p, ul, ol, blockquote, pre, table)) { margin:.3em 0; }
 </style>

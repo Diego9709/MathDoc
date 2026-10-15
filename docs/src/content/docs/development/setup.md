@@ -71,7 +71,10 @@ one TerminusDB server. A test whose services are not configured is skipped.
 | `mathlib` | as `scenario`, plus `MDC_TEST_MATHLIB_BASE_KEY` naming a Mathlib base | Node conversion on Mathlib. |
 
 PostgreSQL is `MDC_TEST_DATABASE_URL`; TerminusDB is `MDC_TEST_TERMINUS_URL` and
-`MDC_TEST_TERMINUS_PASSWORD`. Without a real LeanGround, tests use the contract
+`MDC_TEST_TERMINUS_PASSWORD`. Each test deletes the TerminusDB databases it
+creates (`removeDatabases` in `coordinator/test/harness.ts`); when the test
+TerminusDB is the one a local server uses, a database left behind is listed
+there as a project. Without a real LeanGround, tests use the contract
 double in `coordinator/test/leanground-double.ts`, which checks shapes, not proofs.
 A real LeanGround needs `MDC_TEST_LEANGROUND_URL` and `MDC_TEST_LEANGROUND_TOKEN`,
 and `MDC_TEST_LEANGROUND_ACTOR` when the token's LeanGround actor is not

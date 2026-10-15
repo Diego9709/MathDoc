@@ -4,6 +4,14 @@
  * A failure with a stable `reason` code; `uncertain` when a sent request may have taken effect;
  * `messages` is LeanGround's explanation, e.g. Lean's errors for a rejected proof.
  */
+/** A rejected request body's problems, one per field, e.g. `text: String must contain at most 500 character(s)`. */
+function issues(value: any): string | undefined {
+  if (!Array.isArray(value?.issues) || !value.issues.length) return undefined;
+  return value.issues
+    .map((i: { path?: unknown[]; message?: string }) => `${(i.path ?? []).join(".") || "body"}: ${i.message}`)
+    .join("; ");
+}
+
 export class MdcError extends Error {
   constructor(
     public reason: string,
@@ -77,7 +85,7 @@ export class Client {
     if (!response.ok)
       throw new MdcError(
         value?.reason ?? "request_failed",
-        value?.error ?? value?.reason ?? "request failed",
+        value?.error ?? issues(value) ?? value?.reason ?? "request failed",
         response.status,
         // A server error rolls its transaction back, but a proxy's may hide a commit.
         method !== "GET" && response.status >= 500,

@@ -13,9 +13,12 @@ export type FormalCodeStatus = "no_code" | "unverified" | "verified";
  * text or a definition it uses changed after submission. `rejected`: the node could not be
  * converted or LeanGround refused it (`reason`). `registered`: a definition node whose
  * definitions LeanGround registered (`definition_ids`); definitions have no goal to prove.
+ * `imported`: an external proof import's upstream file, unchanged (`path` at `commit`); the
+ * import's project check covers it, so it is not submitted on its own.
  */
 export type LeanCertification =
   | { status: "not_submitted" }
+  | { status: "imported", module: string, path: string, commit: string }
   | {
       status: "insufficient" | "derivable" | "certified" | "stale" | "rejected" | "registered",
       /** `branch`: whose conversion of the node is shown (absent for stage 4 requests). */
@@ -23,8 +26,13 @@ export type LeanCertification =
       truncated: boolean, reason?: string, details?: string, definition_ids?: string[],
     };
 
+/** Whether the node's Lean block is a definition (registered with LeanGround, nothing to prove)
+ * or a theorem (a goal): as the shown conversion binds it, else as the block declares it. Null
+ * without a Lean block, or when the block cannot be read. */
+export type LeanRole = "definition" | "theorem";
+
 /** `lean`/`rocq`: the local check. `lean_certification`: the LeanGround dimension. */
-export type FormalizationStatus = { lean: FormalCodeStatus, rocq: FormalCodeStatus, lean_certification?: LeanCertification | null, };
+export type FormalizationStatus = { lean: FormalCodeStatus, rocq: FormalCodeStatus, lean_certification?: LeanCertification | null, lean_role?: LeanRole | null, };
 
 export type DependencyCandidatesEmpty = { "kind": "no_match" } | { "kind": "excluded", source: number, existing_dependencies: number, } | { "kind": "result_limit", available: number, };
 
@@ -56,7 +64,8 @@ export type NodeView = { node: NodeDetail, referrers: Array<NodePreview>, childr
 
 export type ResolveResponse = { fnode: string, title: string, };
 
-export type GraphFull = { nodes: Array<NodeSummary & { lean: FormalCodeStatus }>, edges: Array<[number, number]>, };
+/** `certification`: the status of `lean_certification`, null without a Lean block. */
+export type GraphFull = { nodes: Array<NodeSummary & { lean: FormalCodeStatus, lean_role?: LeanRole | null, certification?: LeanCertification["status"] | null }>, edges: Array<[number, number]>, };
 
 export type SearchQuery = { q: string, n?: number, };
 

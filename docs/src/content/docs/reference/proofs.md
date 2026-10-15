@@ -148,11 +148,12 @@ Project commands are `POST /api/coordination/projects/<id>/commands` bodies with
 header; both headers are required (`400 invalid_request`).
 
 - The lease and job commands (`claim`, `heartbeat`, `finish`, `submit`,
-  `resolve`, `import`, `sync`, `submit_node`, `note`, `negate`) are checked
-  against the board as it is: send them with `If-Match: *`. They are never
-  refused for an outdated revision, and a replayed key is matched on the body
-  alone. Of these, only `note` and `finish` with a note change the board's
-  revision when applied; the others' effects arrive with their jobs.
+  `resolve`, `import`, `sync`, `submit_node`, `negate`) and the note commands
+  (`note`, `edit_note`, `delete_note`) are checked against the board as it is:
+  send them with `If-Match: *`. They are never refused for an outdated revision,
+  and a replayed key is matched on the body alone. Of these, only the note
+  commands and `finish` with a note change the board's revision when applied;
+  the others' effects arrive with their jobs.
 - Every other command needs the revision the client read (`If-Match:
   "REVISION"`; `428 revision_required` for `*`, `409 revision_conflict` if it
   changed).
@@ -179,6 +180,8 @@ earlier versions refuse every command (`project_superseded`,
 | `heartbeat` | lease holder | `attempt`, `epoch`, `ttl` | Move the lease's end to `ttl` seconds from now (`stale_lease`). |
 | `finish` | lease holder | `attempt`, `epoch`, `spent`, `outcome`, `note?` | End the attempt: `outcome` is `submitted`, `no_progress`, `execution_failed` or `released`; `spent` at most the allocation (`allocation_exceeded`); a note is kept on the task's goal. |
 | `note` | member | `goal`, `text` (1–500 characters) | Keep a note on a goal; the latest 50 stay. |
+| `edit_note` | the note's author (or their person) | `goal`, `note` (`{actor, at}`, naming the note), `text` | Replace a note's text; the note records `edited`. `404 unknown_note`; `403 note_author_required`. |
+| `delete_note` | the note's author (or their person), or the owner | `goal`, `note` (`{actor, at}`) | Remove a note. |
 | `negate` | member | `goal` | Queued: register the goal's negation as a goal (job result `{goal, negation, name}`); answers `{goal, negation}` at once when one is registered ([Refutation](../../concepts/collaboration/#refutation)). `goal_unresolved` for a goal without a statement, `already_refuted`. |
 | `resolve` | member | `goal`, `proposition`, `definitions` | Queued: give a known GoalKey its statement; the job fails with `identity_mismatch` if the proposition resolves to another key. |
 | `submit` | member | `goal`, `source`, `expected_root`, `component`, `mode`, `definitions`, `new_definitions`, `description?` | Queued: submit a proof or sketch for a goal with a statement (`goal_identity_unavailable`); a sketch's new premises get their statements ([below](#new-subgoals)). Needs no lease. |

@@ -12,7 +12,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli.js";
-import { actors, client, deploy, env, isolated, ready } from "./harness.js";
+import {
+  actors,
+  client,
+  deploy,
+  env,
+  isolated,
+  ready,
+  removeDatabases,
+} from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 import type { Board } from "../src/domain.js";
 
@@ -383,6 +391,7 @@ async function flow(leanground: { url: string; token: string }) {
       404,
     );
   } finally {
+    await removeDatabases(db);
     await dep.close();
     await schema.close();
   }

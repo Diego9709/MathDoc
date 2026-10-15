@@ -10,8 +10,15 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.js";
-import { Terminus } from "../src/docs/terminus.js";
-import { actors, client, deploy, env, isolated, ready } from "./harness.js";
+import {
+  actors,
+  client,
+  deploy,
+  env,
+  isolated,
+  ready,
+  removeDatabases,
+} from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 
 const documents = Boolean(env.dsn && env.terminus && env.terminusPassword);
@@ -134,14 +141,7 @@ async function flow(leanground: { url: string; token: string }) {
     );
     assert.equal(outsider.status, 404, JSON.stringify(outsider));
   } finally {
-    await new Terminus({
-      url: env.terminus!,
-      user: "admin",
-      password: env.terminusPassword!,
-    })
-      .database(db, "main")
-      .deleteDatabase()
-      .catch(() => {});
+    await removeDatabases(db);
     await dep.close();
     await schema.close();
   }

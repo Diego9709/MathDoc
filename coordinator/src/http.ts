@@ -34,6 +34,7 @@ import {
   type Identity,
 } from "./identity.js";
 import { DocsBackend } from "./docs/routes.js";
+import { buildImport, Imports, type ImportRecord } from "./imports.js";
 import { DocError } from "./docs/names.js";
 import { Terminus } from "./docs/terminus.js";
 import { previewWriteback } from "./writeback-plan.js";
@@ -126,6 +127,8 @@ export function server(
         `MDC_ACTORS: ${JSON.stringify(name)} is not a valid actor name`,
       );
   const tokens = new Tokens(store.pool);
+  const environments = new Environments(store.pool);
+  const imports = new Imports(store.pool, lean, cfg.importSources ?? {});
   const authenticate = (req: IncomingMessage): Promise<Identity> =>
     identify(req, cfg.actors, tokens);
   // Document API and the retained web/ editor (docs/mathdoc.md §4.4). Collaboration lives
@@ -145,9 +148,15 @@ export function server(
           authenticate,
           readBody: body,
           boards: (database, branch) => store.bound(database, branch),
+          removed: async (database, actor) => {
+            await store.transaction(async (c) => {
+              await store.retireDatabase(c, database, actor);
+              await environments.drop(database, c);
+            });
+            await imports.drop(database);
+          },
         })
       : null;
-  const environments = new Environments(store.pool);
   // Writeback previews read the branch the way the writeback job does.
   const terminus =
     cfg.terminusUrl && cfg.terminusPassword
@@ -254,6 +263,109 @@ export function server(
           send(res, 200, await tokens.revoke(who.principal, name));
         else throw new Fault("method_not_allowed", 405);
         return;
+      }
+      // External proof imports (docs/external-proofs.md §3.3): read like the database's main
+      // branch; created by admins, checked by the database's owners.
+      if (url.pathname === "/api/imports" && method === "GET") {
+        const out = [];
+        for (const r of await imports.list())
+          if (await canRead(actor, r.database, "main")) out.push(r);
+        send(res, 200, out);
+        return;
+      }
+      if (url.pathname === "/api/imports" && method === "POST") {
+        requireThat(documents, "documents_not_configured", 503);
+        requireScope(who, "maintain");
+        requireThat(admin, "admin_required", 403);
+        const input = z
+          .object({
+            database: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+            source: z.string(),
+            config: z.string(),
+            commit: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+          })
+          .strict()
+          .parse(await body(req));
+        const source = imports.sources[input.source];
+        requireThat(source, "import_source_not_configured", 404);
+        requireThat(!(await imports.get(input.database)), "import_exists", 409);
+        const { record, graph } = await buildImport(
+          input.database,
+          input.source,
+          source!,
+          input.config,
+          actor,
+          input.commit,
+        );
+        try {
+          await documents.createWithGraph(actor, input.database, graph);
+        } catch (e) {
+          if (e instanceof DocError) throw new Fault(e.message, e.status);
+          throw e;
+        }
+        await imports.put(record);
+        send(res, 200, { import: record, checks: [] });
+        return;
+      }
+      const importPath = /^\/api\/imports\/([A-Za-z0-9_-]+)(\/checks|\/rebuild|\/source|\/source\/file)?$/.exec(url.pathname);
+      if (importPath) {
+        const [, database, sub] = importPath;
+        await documentRole(actor, database, "main", "read");
+        const record = await imports.get(database);
+        requireThat(record, "not_found", 404);
+        if (!sub && method === "GET") {
+          send(res, 200, { import: record, checks: await imports.checks(database) });
+          return;
+        }
+        if (sub === "/checks" && method === "POST") {
+          requireScope(who, "maintain");
+          await documentRole(actor, database, "main", "member_manage");
+          send(res, 200, await imports.submit(database, actor));
+          return;
+        }
+        // Rebuilds the nodes at the import's commit: ids are kept, nodes added since are written
+        // in, and the checks stay (they are of the configuration, not of the nodes).
+        if (sub === "/rebuild" && method === "POST") {
+          requireThat(documents, "documents_not_configured", 503);
+          requireScope(who, "maintain");
+          requireThat(admin, "admin_required", 403);
+          const source = imports.sources[record!.source];
+          requireThat(source, "import_source_not_configured", 503);
+          const { record: next, graph } = await buildImport(
+            database,
+            record!.source,
+            source!,
+            record!.config_name,
+            actor,
+            record!.commit,
+          );
+          let report: unknown;
+          try {
+            report = await documents.upsertGraph(actor, database, graph.nodes);
+          } catch (e) {
+            if (e instanceof DocError) throw new Fault(e.message, e.status);
+            throw e;
+          }
+          const rebuilt: ImportRecord = {
+            ...next,
+            created_by: record!.created_by,
+            created_at: record!.created_at,
+            rebuilt_by: actor,
+            rebuilt_at: new Date().toISOString(),
+          };
+          await imports.update(rebuilt);
+          send(res, 200, { import: rebuilt, graph: report });
+          return;
+        }
+        if (sub === "/source" && method === "GET") {
+          send(res, 200, await imports.source(record!));
+          return;
+        }
+        if (sub === "/source/file" && method === "GET") {
+          send(res, 200, await imports.file(record!, url.searchParams.get("module") ?? ""));
+          return;
+        }
+        requireThat(false, "method_not_allowed", 405);
       }
       requireThat(coordination, "not_found", 404);
       if (path === "/api/documents" && method === "GET") {
@@ -456,6 +568,7 @@ export function server(
           await documentRole(actor, m.database, input.branch, "write");
           grants.editsBranch = true;
         } else requireScope(who, ...commandScopes[input.type]);
+        if (input.type === "delete_note") grants.maintains = allows(who, "maintain");
         if (input.type === "members") {
           requireThat(
             input.members.every((m) => Object.hasOwn(cfg.actors, m)),
@@ -757,7 +870,24 @@ export function server(
           source: true,
         });
         checkFact(b, f);
-        send(res, 200, f);
+        // A reviewer reads a premise's statement together with the definitions it uses;
+        // definitions registered with a sketch are no longer in its certified source.
+        const ids = z.array(z.string()).catch([]).parse(f.definitions ?? []);
+        const definition_sources = await Promise.all(
+          ids.map(async (id) => {
+            const d = await lean.fact("read", {
+              kind: "definition",
+              id,
+              source: true,
+            });
+            return {
+              id,
+              name: String(d.name ?? ""),
+              source: typeof d.source === "string" ? d.source : "",
+            };
+          }),
+        );
+        send(res, 200, { ...f, definition_sources });
         return;
       }
       requireThat(b.node_ref, "no_document_binding");

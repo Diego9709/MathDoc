@@ -19,7 +19,15 @@ import { Terminus } from "../src/docs/terminus.js";
 import { JOB_TRIES, Store, retryDelay } from "../src/store.js";
 import { main } from "../src/cli.js";
 import { board } from "./fixtures.js";
-import { actors, client, deploy, env, isolated, ready } from "./harness.js";
+import {
+  actors,
+  client,
+  deploy,
+  env,
+  isolated,
+  ready,
+  removeDatabases,
+} from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 
 const documents = Boolean(env.dsn && env.terminus && env.terminusPassword);
@@ -241,6 +249,7 @@ test(
       const again = await mdc("prove", pulled.file);
       assert.deepEqual([again.replayed, again.status], [true, "certified"]);
     } finally {
+      await removeDatabases(db);
       await lean.close();
       await dep.close();
       await schema.close();
@@ -302,11 +311,6 @@ require("node:readline")
     let output = "";
     child.stdout.on("data", (c) => (output += c));
     child.stderr.on("data", (c) => (output += c));
-    const terminus = new Terminus({
-      url: env.terminus!,
-      user: "admin",
-      password: env.terminusPassword!,
-    });
     try {
       for (let i = 0; !output.includes("MathDoc http://"); i++) {
         assert.ok(i < 300 && child.exitCode === null, output);
@@ -356,10 +360,7 @@ require("node:readline")
       }
     } finally {
       child.kill("SIGKILL");
-      await terminus
-        .database(db, "main")
-        .deleteDatabase()
-        .catch(() => {});
+      await removeDatabases(db);
       await schema.close();
     }
   },
@@ -438,14 +439,7 @@ async function rejected(leanground: { url: string; token: string }) {
     const proved = await prove("omega");
     assert.equal(proved.status, "certified", JSON.stringify(proved));
   } finally {
-    await new Terminus({
-      url: env.terminus!,
-      user: "admin",
-      password: env.terminusPassword!,
-    })
-      .database(db, "main")
-      .deleteDatabase()
-      .catch(() => {});
+    await removeDatabases(db);
     await dep.close();
     await schema.close();
   }

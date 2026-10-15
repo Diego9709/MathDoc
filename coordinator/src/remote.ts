@@ -103,6 +103,14 @@ export class LeanGround {
       LEAN_OPERATIONS.has(operation) ? this.leanTimeoutMs : SHORT_TIMEOUT_MS,
     );
   }
+  /** Submit a project check (docs/external-proofs.md §3.1): Comparator on a registered workspace. */
+  projectCheck(body: unknown) {
+    return this.call("/v1/project-checks", body);
+  }
+  /** A project check's state; its result once it has finished. */
+  getProjectCheck(id: string) {
+    return this.call(`/v1/project-checks/${encodeURIComponent(id)}`);
+  }
   /** Check a whole Lean file on these bases: Lean's diagnostics and axioms; no certificate. */
   check(source: string, bases: string[]) {
     return this.call("/v1/check", { source, bases }, this.leanTimeoutMs);

@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { client, deploy, isolated, ready } from "./harness.js";
+import { client, deploy, isolated, ready, removeDatabases } from "./harness.js";
 import type { Board } from "../src/domain.js";
 
 const baseKey = process.env.MDC_TEST_MATHLIB_BASE_KEY;
@@ -188,6 +188,7 @@ test(
       assert.equal(q.goals[q.root].status, "certified");
       console.log("mathlib timings (ms)", JSON.stringify(timings));
     } finally {
+      await removeDatabases(db);
       await dep.close();
       await schema.close();
     }

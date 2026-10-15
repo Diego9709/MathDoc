@@ -6,7 +6,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { client, deploy, isolated, ready, type Actor } from "./harness.js";
+import {
+  client,
+  deploy,
+  isolated,
+  ready,
+  removeDatabases,
+  type Actor,
+} from "./harness.js";
 import type { Board } from "../src/domain.js";
 
 const nodes = (b: Board) => b.branches!.main.nodes;
@@ -546,6 +553,7 @@ test(
       assert.equal(badNodes[inst].reason, "unsupported_declaration");
       assert.ok(q.branches!.main.request.bound);
     } finally {
+      await removeDatabases(db);
       await dep.close();
       await schema.close();
     }

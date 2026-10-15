@@ -16,6 +16,8 @@ export const sourceOptions: editor.IStandaloneEditorConstructionOptions = {
   lineDecorationsWidth: 5, scrollBeyondLastLine: false, mouseWheelZoom: false,
   scrollbar: {handleMouseWheel: false, vertical: 'hidden', horizontal: 'hidden'},
   fixedOverflowWidgets: true, renderLineHighlight: 'gutter',
+  // Lean's ℕ and CJK punctuation are not confusables here; invisible characters stay marked.
+  unicodeHighlight: {ambiguousCharacters: false},
 };
 /** Finish visible syntax before revealing an editor; leave the rest to its worker. */
 export function renderSource(view: editor.IStandaloneCodeEditor) {
@@ -74,6 +76,11 @@ export function loadSourceLanguage(type: keyof typeof grammars) {
         autoClosingPairs: [{open: '{', close: '}'}, {open: '[', close: ']'}, {open: '(', close: ')'}],
         comments: type === 'latex' ? {lineComment: '%'} : type === 'rocq' ? {blockComment: ['(*', '*)']}
           : type === 'lean' ? {lineComment: '--', blockComment: ['/-', '-/']} : {blockComment: ['<!--', '-->']},
+        // Markdown: typing a mark over a selection wraps it, as the toolbar does.
+        ...(type === 'text' ? {surroundingPairs: [
+          {open: '{', close: '}'}, {open: '[', close: ']'}, {open: '(', close: ')'},
+          {open: '*', close: '*'}, {open: '_', close: '_'}, {open: '`', close: '`'}, {open: '$', close: '$'},
+        ]} : {}),
       });
       await editor.colorize('', language, {});
       return language;

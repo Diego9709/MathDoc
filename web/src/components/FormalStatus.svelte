@@ -1,17 +1,24 @@
 <script lang="ts">
-  import type { FormalCodeStatus, LeanCertification } from "../lib/types";
-  let { language, status, certification, compact = false }: {
-    language: "Lean" | "Rocq"; status: FormalCodeStatus; certification?: LeanCertification | null; compact?: boolean;
+  import type { FormalCodeStatus, LeanCertification, LeanRole } from "../lib/types";
+  let { language, status, certification, role = null, compact = false }: {
+    language: "Lean" | "Rocq"; status: FormalCodeStatus; certification?: LeanCertification | null;
+    role?: LeanRole | null; compact?: boolean;
   } = $props();
+  // A definition has nothing to prove: it reads as a definition until LeanGround registers it,
+  // unless its submission went stale or was refused.
+  const definition = $derived(role === "definition" &&
+    !(certification && (certification.status === "stale" || certification.status === "rejected")));
   const labels = { no_code: "No code", unverified: "Unverified", verified: "Verified" };
   const certificationLabels = {
     not_submitted: "Not submitted to LeanGround", insufficient: "Insufficient evidence",
     derivable: "Derivable", certified: "Certified",
     stale: "Changed since submission", rejected: "Not accepted", registered: "Registered definition",
+    imported: "Imported from upstream · covered by the project check",
   };
   // Two dimensions (docs/mathdoc.md §4.5): a local check is only an editing aid; certification comes
   // from LeanGround. The legacy backend reports only the local check.
   const text = $derived.by(() => {
+    if (definition) return certification?.status === "registered" ? certificationLabels.registered : "Definition";
     if (certification === undefined) return labels[status];
     if (certification === null) return labels.no_code;
     const base = certificationLabels[certification.status];
@@ -20,13 +27,15 @@
     const local = status === "verified" ? " · local check passed" : "";
     return `${base}${truncated}${reason}${local}`;
   });
-  const shown = $derived(certification === undefined ? status : certification === null ? "no_code" : certification.status);
+  const shown = $derived(definition ? (certification?.status === "registered" ? "registered" : "definition")
+    : certification === undefined ? status : certification === null ? "no_code" : certification.status);
   const label = $derived(`${language}: ${text}`);
   // A refusal's explanation (Lean's messages, for a proof LeanGround rejected) shows on hover.
-  const hover = $derived(certification?.status === "rejected" && certification.details ? `${label}\n\n${certification.details}` : label);
+  const hover = $derived(certification?.status === "rejected" && certification.details ? `${label}\n\n${certification.details}`
+    : certification?.status === "imported" ? `${label}\n\n${certification.path} at ${certification.commit.slice(0, 12)}` : label);
 </script>
 
-<span class="formal-status" data-status={shown} title={hover} aria-label={label}>
+<span class="formal-status" data-status={shown} data-role={role === "definition" ? "definition" : undefined} title={hover} aria-label={label}>
   <span class="status-light" aria-hidden="true"></span>
   <span class="formal-language">{language}</span>
   {#if !compact}<span class="status-text">{text}</span>{/if}
@@ -53,9 +62,21 @@
     background: var(--mdc-warning);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--mdc-warning) 20%, transparent);
   }
-  .formal-status[data-status="not_submitted"] .status-light {
+  .formal-status[data-status="not_submitted"] .status-light, .formal-status[data-status="definition"] .status-light {
     background: transparent;
     box-shadow: inset 0 0 0 1.5px var(--mdc-muted);
+  }
+  /* A definition's light is a diamond, as in the graph: its kind shows without colour. */
+  .formal-status[data-role="definition"] .status-light {
+    width: 6px;
+    height: 6px;
+    margin-inline: 0.5px;
+    border-radius: 1px;
+    transform: rotate(45deg);
+  }
+  .formal-status[data-status="imported"] .status-light {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--mdc-accent);
   }
   .formal-status[data-status="insufficient"] .status-light {
     background: var(--mdc-warning);

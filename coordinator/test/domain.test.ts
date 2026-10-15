@@ -421,6 +421,44 @@ test("stage 3: notes stay on the goal, with finish, at most 50 of at most 500 ch
     attempt: a.id,
   });
 });
+test("notes change only by their author, the author's person, or the owner removing one", () => {
+  const b = projectBoard();
+  b.members.push("carol");
+  const run = (actor: string, input: unknown, at = 10, grants = {}) =>
+    command(b, actor, commandSchema.parse(input), at, grants);
+  run("bob/agent", { type: "note", goal: "T", text: "tried induction" }, 1);
+  run("carol", { type: "note", goal: "T", text: "see A first" }, 2);
+  const agent = { actor: "bob/agent", at: 1 };
+  const edit = (actor: string, note: object, text: string) =>
+    run(actor, { type: "edit_note", goal: "T", note, text });
+  // The token itself and its person edit; another member, another token or the owner do not.
+  edit("bob/agent", agent, "tried induction on n");
+  assert.deepEqual(edit("bob", agent, "  tried strong induction  ").result, {
+    actor: "bob/agent",
+    at: 1,
+    text: "tried strong induction",
+    edited: 10,
+  });
+  for (const actor of ["carol", "bob/other", "alice"])
+    assert.throws(() => edit(actor, agent, "x"), /note_author_required/);
+  assert.throws(
+    () => edit("bob", { actor: "bob/agent", at: 3 }, "x"),
+    /unknown_note/,
+  );
+  // The owner removes another member's note only with `maintain`.
+  const remove = (actor: string, note: object, grants = {}) =>
+    run(actor, { type: "delete_note", goal: "T", note }, 11, grants);
+  const carols = { actor: "carol", at: 2 };
+  assert.throws(() => remove("bob", carols), /note_author_required/);
+  assert.throws(() => remove("alice/bot", carols), /note_author_required/);
+  assert.throws(
+    () => remove("alice/bot", carols, { maintains: false }),
+    /note_author_required/,
+  );
+  remove("alice", carols, { maintains: true });
+  remove("bob", agent);
+  assert.deepEqual(b.goals.T.notes, []);
+});
 test("stage 4: a delegated token acts for its person; leases and audit keep the full identity", () => {
   const b = projectBoard();
   ingest(b, fact("t", "T", ["A", "B"]), { source: "document" });

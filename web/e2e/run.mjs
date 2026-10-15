@@ -215,6 +215,11 @@ const center = (page) => page.getByRole("region", { name: "current node" });
 async function title(page, name) {
   await center(page).getByRole("button", { name, exact: true }).waitFor();
 }
+/** Replace the text of a Monaco editor (a Markdown field) through its input. */
+async function typeInto(page, box, text) {
+  await box.press("ControlOrMeta+a");
+  await page.keyboard.insertText(text);
+}
 async function leanReply(socket, method) {
   const sent = await socket.waitForEvent("framesent", {predicate: ({payload}) => JSON.parse(String(payload)).method === method});
   const {id} = JSON.parse(String(sent.payload));
@@ -625,6 +630,8 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
       await page.goto(`${url}/?shared#ref=${node.fnode}`);
       for (const {srctype, content} of node.blocks) {
         const block = page.locator(`[data-srctype="${srctype}"]`);
+        // Text opens in Preview; the editor keeps that mode for the rest of the page.
+        if (srctype === 'text') await block.getByRole('button', {name: 'Return to Markdown editor'}).click();
         await block.locator('.editor-scroll:not(.pending)').waitFor();
         const colors = await block.locator('.view-line span').evaluateAll(spans => [...new Set(spans.map(el => getComputedStyle(el).color))]);
         assert.ok(colors.length >= 2, `${srctype} has native syntax colors`);
@@ -647,9 +654,12 @@ await test('Monaco source blocks retain highlighting, edits and undo across layo
   } finally { await browser.close(); }
 });
 
-await test('text blocks preview sanitized Markdown with math, from the draft and across nodes', {timeout: 60000}, async () => {
+await test('text blocks open in a sanitized Markdown preview with math, show the draft and keep the mode across nodes', {timeout: 60000}, async () => {
   const browser = await launchBrowser();
-  const second = {fnode: randomUUID(), title: 'Second text', module: 'Lib.SecondText', depens: [], blocks: [
+  const empty = {fnode: randomUUID(), title: 'Empty text', module: 'Lib.EmptyText', depens: [], blocks: [
+    {srctype: 'text', content: ''},
+  ]};
+  const second = {fnode: randomUUID(), title: 'Second text', module: 'Lib.SecondText', depens: [empty.fnode], blocks: [
     {srctype: 'text', content: '## Next\n\nKeeps the mode.\n'},
   ]};
   const first = {fnode: randomUUID(), title: 'Markdown text', module: 'Lib.MarkdownText', depens: [second.fnode], blocks: [
@@ -659,8 +669,6 @@ await test('text blocks preview sanitized Markdown with math, from the draft and
     await fixture(browser, async ({page, url, cli}) => {
       await page.goto(`${url}/?shared#ref=${first.fnode}`);
       let block = page.locator('[data-srctype="text"]');
-      await block.locator('.editor-scroll:not(.pending)').waitFor();
-      await block.getByRole('button', {name: 'Render Markdown preview'}).click();
       let preview = block.locator('.markdown-preview');
       await preview.locator('h1', {hasText: 'Claim'}).waitFor();
       await preview.locator('.latex-math[data-tex="a_1 * b_2"] mjx-container').waitFor();
@@ -689,7 +697,26 @@ await test('text blocks preview sanitized Markdown with math, from the draft and
       await block.getByRole('button', {name: 'Save', exact: true}).click();
       await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
       assert.equal(JSON.parse((await cli('show', second.fnode)).stdout).blocks[0].content, '## Next\n\nKeeps the mode.\n\nA **draft**.');
-    }, [second, first]);
+
+      // The Markdown toolbar edits the draft as one step, which ⌘Z undoes.
+      await block.getByRole('button', {name: 'Return to Markdown editor'}).click();
+      const source = block.getByRole('textbox', {name: /^text source/});
+      await source.press(documentEndKey);
+      await block.getByRole('button', {name: /^Display math/}).click();
+      await block.getByText('Unsaved', {exact: true}).waitFor();
+      await block.getByRole('button', {name: 'Render Markdown preview'}).click();
+      await preview.locator('.latex-math[data-display="true"][data-tex="x^2"] mjx-container').waitFor();
+      await block.getByRole('button', {name: 'Return to Markdown editor'}).click();
+      await source.press('ControlOrMeta+z');
+      await block.getByText('Unsaved', {exact: true}).waitFor({state: 'hidden'});
+
+      // An empty text block has nothing to read, so it opens in the editor.
+      await page.getByRole('complementary', {name: 'Dependencies'}).getByRole('button', {name: /^Empty text/}).click();
+      await title(page, 'Empty text');
+      block = page.locator('[data-srctype="text"]');
+      await block.locator('.editor-scroll:not(.pending)').waitFor();
+      await block.getByRole('button', {name: 'Render Markdown preview'}).waitFor();
+    }, [empty, second, first]);
   } finally { await browser.close(); }
 });
 
@@ -1191,28 +1218,47 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
       await current.getByRole('button', {name: 'Submit to LeanGround'}).click();
       await page.getByRole('dialog', {name: 'Submit to LeanGround'}).getByRole('button', {name: 'Submit', exact: true}).click();
 
-      // Proof overview: the definition is registered, the lemma proved, the root a sketch.
-      const collab = page.getByRole('dialog', {name: 'Collaboration'});
-      const overview = collab.getByRole('region', {name: 'Proof overview'});
-      await overview.getByRole('heading', {name: /triple_one derivable/}).waitFor({timeout: 120000});
-      const rows = overview.getByRole('row');
-      await rows.filter({hasText: 'triple_eq'}).getByText('submitted').waitFor();
-      await rows.filter({hasText: 'triple'}).first().waitFor();
-      assert.match(await overview.innerText(), /registered/);
+      // Submitting opens the collaboration page: the problem, its stages, and the next step.
+      await page.waitForURL(/\/collab(\?|$)/);
+      const collab = page.getByRole('main', {name: 'Collaboration'});
+      const sections = collab.getByRole('navigation', {name: 'Sections'});
+      const inspector = collab.getByRole('complementary', {name: 'Inspector'});
+      await collab.getByRole('heading', {name: /triple_one\s+provable by assembly/}).waitFor({timeout: 120000});
+      await collab.getByRole('list', {name: 'Stages'}).getByText('every goal proved').waitFor();
       // One line says what the proof waits for: the lemma is proved, so main's route can be assembled.
       const next = collab.getByLabel('Next step');
       await next.filter({hasText: /Every goal on main's route has a proof\. Assemble it/}).waitFor();
 
-      // Certificates list the root's conditional certificate, grouped by kind, with its origin.
-      await collab.getByRole('tab', {name: 'Certificates'}).click();
-      const listed = collab.getByRole('region', {name: 'Certificates'});
-      await listed.getByText(/^Decompositions \(\d+\)$/).waitFor();
-      await listed.getByText(/^Complete proofs \(\d+\)$/).waitFor();
+      // The project: the definition is registered, the lemma proved, the root a sketch.
+      await sections.getByRole('button', {name: 'Project'}).click();
+      const project = collab.getByRole('region', {name: 'Project'});
+      await project.getByRole('row').filter({hasText: 'triple_eq'}).getByText('submitted').waitFor();
+      assert.match(await project.innerText(), /registered/);
+
+      // The proof tree: the root's decomposition with its origin, under it the premise triple_eq
+      // and the premise's complete proof; the submitted nodes make main's route.
+      await sections.getByRole('button', {name: 'Proof tree'}).click();
+      const listed = collab.getByRole('region', {name: 'Proof tree'});
+      await listed.getByText(/^decomposition ⇐ triple_eq$/).waitFor();
       await listed.getByText(/from the document node triple_one/).waitFor();
-      await listed.getByText(/⇐ triple_eq/).waitFor();
-      // The submitted nodes pick main's route: the root's sketch and the lemma's proof.
-      await listed.getByText("on main's route").first().waitFor();
+      await listed.locator('.cert-node .goal-node .cert-node').getByText('complete proof', {exact: true}).waitFor();
       assert.equal(await listed.getByText("on main's route").count(), 2);
+      // Selecting the decomposition shows it in the inspector, with the definitions it uses.
+      await listed.getByText(/^decomposition ⇐ triple_eq$/).click();
+      await inspector.getByText('Definitions used').waitFor({timeout: 30000});
+      await inspector.getByText(/def triple/).first().waitFor();
+      // The same proof as an AND-OR graph: each goal once, under it its ways to prove it as
+      // junctions, under a decomposition its premises; selecting a card selects its goal.
+      await collab.getByRole('group', {name: 'Proof view'}).getByRole('button', {name: 'Graph'}).click();
+      const graph = collab.getByRole('region', {name: 'Proof graph'});
+      assert.equal(await graph.getByRole('button', {name: 'triple_eq', exact: true}).count(), 1);
+      await graph.getByRole('button', {name: 'decomposition of triple_one ⇐ triple_eq'}).waitFor();
+      await graph.getByRole('button', {name: 'complete proof of triple_eq'}).waitFor();
+      assert.equal(await graph.getByRole('button', {name: 'decomposition of triple_one ⇐ triple_eq'}).getAttribute('aria-pressed'), 'true');
+      await graph.getByRole('button', {name: 'triple_eq', exact: true}).click();
+      await inspector.getByRole('heading', {name: 'triple_eq'}).waitFor();
+      await page.screenshot({path: resolve(tmpdir(), `mdc-collab-graph-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
+      await collab.getByRole('group', {name: 'Proof view'}).getByRole('button', {name: 'Outline'}).click();
 
       // Stage 3 (docs/mathdoc.md §2.7.3): an agent's decomposition of the root waits for review.
       const origin = new URL(url).origin;
@@ -1229,42 +1275,90 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
         }),
       });
       assert.equal(response.status, 200, await response.text());
-      const decompositions = collab.getByRole('region', {name: 'Certificates'});
-      const pending = decompositions.getByRole('region', {name: 'Pending review'});
-      await pending.getByText('the root read backwards').waitFor({timeout: 120000});
-      // The tab counts what waits for the owner.
-      assert.equal(await collab.getByRole('tab', {name: /^Certificates/}).locator('.badge').innerText(), '1');
+      // The section counts what waits for the owner.
+      const reviewNav = sections.getByRole('button', {name: /^Review/});
+      await reviewNav.locator('.badge').filter({hasText: /^1$/}).waitFor({timeout: 120000});
+      await reviewNav.click();
+      const pending = collab.getByRole('region', {name: 'Pending review'});
+      await pending.getByText('the root read backwards').waitFor();
       assert.match(await pending.innerText(), /triple_one_alt : 3 = triple 1/);
       assert.match(await pending.innerText(), /Submitted by e2e .* needed by branch main/s);
+      // The review card reads the definitions the decomposition uses from LeanGround.
+      await pending.getByText(/def triple/).first().waitFor({timeout: 30000});
       await page.screenshot({path: resolve(tmpdir(), `mdc-review-pending-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
       // Until it is active, its new subgoal cannot be claimed.
-      await collab.getByRole('tab', {name: 'Task board'}).click();
-      const tasks = collab.getByRole('region', {name: 'Task board'});
+      await sections.getByRole('button', {name: /^Tasks/}).click();
+      const tasks = collab.getByRole('region', {name: 'Tasks'});
       const subgoal = tasks.getByRole('row').filter({hasText: 'triple_one_alt'});
       await subgoal.getByText('inactive').waitFor();
-      assert.equal(await subgoal.getByRole('button', {name: 'Claim'}).isDisabled(), true);
-      await collab.getByRole('tab', {name: 'Certificates'}).click();
-      await pending.getByPlaceholder('Review comment (optional)').fill('fine as an alternative');
+      await subgoal.getByRole('button', {name: 'triple_one_alt'}).click();
+      await inspector.getByText(/Not claimable yet/).waitFor();
+      await reviewNav.click();
+      await typeInto(page, pending.getByRole('textbox', {name: /^Review comment on/}), 'fine as an alternative');
       await pending.getByRole('button', {name: 'Activate'}).click();
       await pending.waitFor({state: 'detached'});
-      await decompositions.getByText(/active by e2e: fine as an alternative/).waitFor();
-      // Notes stay on the goal and show on the task board.
-      await collab.getByRole('tab', {name: 'Task board'}).click();
+      // What was decided stays listed, with who decided and the comment.
+      const decided = collab.getByRole('region', {name: 'Decided'});
+      await decided.getByRole('listitem').filter({hasText: /triple_one ⇐ 1 premise\s*Activated\s*by e2e/}).getByText('fine as an alternative').waitFor();
+      await sections.getByRole('button', {name: 'Proof tree'}).click();
+      await listed.getByText(/active by e2e: fine as an alternative/).waitFor();
+      // In the graph, the other way to prove the root previews main's route through it: its
+      // premise is open, so the route would not close. Reset leaves the route as it was.
+      await collab.getByRole('group', {name: 'Proof view'}).getByRole('button', {name: 'Graph'}).click();
+      const alternative = graph.getByRole('button', {name: 'decomposition of triple_one ⇐ triple_one_alt'});
+      assert.equal(await alternative.getAttribute('aria-pressed'), 'false');
+      await alternative.click();
+      const routePreview = collab.getByRole('status', {name: 'Route preview'});
+      await routePreview.getByText(/1 change to main's route/).waitFor();
+      await routePreview.getByText(/leaves 2 open: triple_one, triple_one_alt/).waitFor();
+      assert.equal(await alternative.getAttribute('aria-pressed'), 'true');
+      await routePreview.getByRole('button', {name: 'Reset'}).click();
+      await routePreview.waitFor({state: 'detached'});
+      await collab.getByRole('group', {name: 'Proof view'}).getByRole('button', {name: 'Outline'}).click();
+      // Notes stay on the goal, in the inspector's Notes tab, written in the Markdown editor; the
+      // inspector also claims the goal's task.
+      await sections.getByRole('button', {name: /^Tasks/}).click();
       await subgoal.getByText('inactive').waitFor({state: 'detached'});
-      assert.equal(await subgoal.getByRole('button', {name: 'Claim'}).isDisabled(), false);
-      await subgoal.getByRole('button', {name: 'Add note'}).click();
-      await subgoal.getByLabel(/^Note on/).fill('this is just triple_one turned around');
-      await subgoal.getByRole('button', {name: 'Save note'}).click();
-      await subgoal.getByText('1 note').click();
-      await subgoal.getByText(/e2e · .* this is just triple_one turned around/).waitFor();
+      await subgoal.getByRole('button', {name: 'triple_one_alt'}).click();
+      await inspector.getByRole('tab', {name: 'Notes 0'}).click();
+      const notes = inspector.getByRole('region', {name: 'Notes on triple_one_alt'});
+      const newNote = notes.getByRole('textbox', {name: /^New note/});
+      await typeInto(page, newNote, 'this is just triple_one turned around');
+      await notes.getByRole('button', {name: 'Add note'}).click();
+      await notes.locator('.note').getByText('this is just triple_one turned around').waitFor();
+      await typeInto(page, newNote, 'a second thought');
+      await notes.getByRole('button', {name: 'Add note'}).click();
+      await notes.locator('.note').getByText('a second thought').waitFor();
+      // The author edits a note: the toolbar puts the selection in math, the preview typesets it.
+      // Newest first; while edited, the note's text is in the editor, so it is found by place.
+      const first = notes.locator('.note').nth(1);
+      await first.getByRole('button', {name: 'Edit'}).click();
+      const editing = first.getByRole('textbox', {name: /^Edit note by/});
+      await typeInto(page, editing, 'this is just triple_one turned around, as 3 = 1 + 1 + 1');
+      for (let i = 0; i < '3 = 1 + 1 + 1'.length; i++) await page.keyboard.press('Shift+ArrowLeft');
+      await first.getByRole('button', {name: /^Inline math/}).click();
+      await first.getByRole('button', {name: 'Preview'}).click();
+      await first.getByLabel(/^Edit note by .* preview$/).locator('mjx-container').waitFor();
+      await first.getByRole('button', {name: 'Save', exact: true}).click();
+      await first.getByText(/· edited/).waitFor();
+      await first.locator('.note-body mjx-container').waitFor();
+      page.once('dialog', dialog => dialog.accept());
+      await notes.locator('.note').filter({hasText: 'a second thought'}).getByRole('button', {name: 'Delete'}).click();
+      await notes.getByText('a second thought').waitFor({state: 'detached'});
+      await inspector.getByRole('tab', {name: 'Notes 1'}).waitFor();
+      const [noted] = await api(`${origin}/api/coordination/projects?database=${database}&branch=main`);
+      assert.deepEqual(Object.values(noted.goals).flatMap(g => (g.notes ?? []).map(n => n.text)), ['this is just triple_one turned around, as $3 = 1 + 1 + 1$']);
+      await inspector.getByRole('tab', {name: 'Overview'}).click();
+      await inspector.getByText(/turned around, as/).waitFor();
       await page.screenshot({path: resolve(tmpdir(), `mdc-task-notes-${process.env.MDC_E2E_BROWSER ?? 'chromium'}.png`)});
-      // Stage 4: the task board adds up the budget by participant identity.
-      await subgoal.getByRole('button', {name: 'Claim'}).click();
+      // Stage 4: the budget adds up by participant identity.
+      await sections.getByRole('button', {name: /^Tasks/}).click();
+      await inspector.getByRole('button', {name: 'Claim'}).click();
       const budget = tasks.getByRole('table', {name: 'Budget by participant'});
       await budget.getByRole('row').filter({hasText: 'e2e'}).getByText('100').waitFor();
 
       // Assemble a route, then write the certified result back in one batch.
-      await collab.getByRole('tab', {name: 'Assemble & write back'}).click();
+      await sections.getByRole('button', {name: /^Assemble/}).click();
       const review = collab.getByRole('region', {name: 'Assemble and write back'});
       await review.getByRole('button', {name: 'Assemble a route'}).click();
       await review.getByRole('button', {name: 'Accept and write back'}).waitFor({timeout: 120000});
@@ -1282,9 +1376,11 @@ await test('a Lean node is submitted to LeanGround, assembled and written back f
       await review.getByText(/Written back to branch main \(writeback [^)]*\): .*updated the Lean block of triple_one/).waitFor({timeout: 60000});
       assert.equal(await review.getByRole('button', {name: 'Accept and write back'}).count(), 0);
       await next.filter({hasText: /Proved\. LeanGround certified the whole proof/}).waitFor();
-      // The committed writeback reloads the open node; no manual refresh.
-      await current.getByLabel('Lean: Certified').waitFor({timeout: 30000});
-      await collab.getByRole('button', {name: 'Close'}).click();
+      await collab.getByRole('list', {name: 'Stages'}).getByText('in the document').waitFor();
+      // Back in the document, the node carries the certified proof.
+      await page.getByTitle('Back to the document').click();
+      await title(page, 'triple_one');
+      await page.getByRole('region', {name: 'current node'}).getByLabel('Lean: Certified').waitFor({timeout: 30000});
       const saved = await api(`${url}/api/node/${root.fnode}/view`);
       assert.ok(saved.node.blocks[0].metadata.certification_id, 'the certification is written to the block metadata');
     }, [def, lemma, root]);

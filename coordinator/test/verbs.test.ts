@@ -11,7 +11,15 @@ import { join } from "node:path";
 import { main } from "../src/cli.js";
 import { goalOf } from "../src/mdc/verbs.js";
 import { type Client, MdcError } from "../src/mdc/client.js";
-import { actors, client, deploy, env, isolated, ready } from "./harness.js";
+import {
+  actors,
+  client,
+  deploy,
+  env,
+  isolated,
+  ready,
+  removeDatabases,
+} from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 import type { Board } from "../src/domain.js";
 
@@ -164,6 +172,8 @@ async function flow(leanground: { url: string; token: string }) {
     assert.ok(!dry.source.includes("import"));
     assert.equal(await submits(id), 0);
     await assert.rejects(mdc("split", file), /usage|DESCRIPTION/);
+    // A description over the limit names the field and the limit, not only invalid_request.
+    await assert.rejects(mdc("split", file, "-m", "x".repeat(2001)), /description: .*2000/);
     const split = await mdc("split", file, "-m", "unfold double", "--wait");
     assert.equal(split.status, "certified", JSON.stringify(split));
     assert.equal(split.mode, "sketch");
@@ -191,6 +201,7 @@ async function flow(leanground: { url: string; token: string }) {
       "unfolding double should be enough",
     );
     assert.equal(noted.goal, sub.goal);
+    await assert.rejects(mdc("note", sub.goal.slice(0, 10), "-m", "x".repeat(501)), /text: .*500/);
     await http.done(id, "alice", {
       type: "decomposition",
       certificate: split.certificate,
@@ -353,6 +364,7 @@ async function flow(leanground: { url: string; token: string }) {
     );
     assert.equal(await submits(id), before + 1);
   } finally {
+    await removeDatabases(db, `${db}x`);
     await dep.close();
     await schema.close();
   }

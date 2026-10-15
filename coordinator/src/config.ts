@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { DEFAULT_LEAN_TIMEOUT_S } from "./remote.js";
+import { importSources, type ImportSource } from "./imports.js";
 
 /**
  * A secret from NAME or from the file named by NAME_FILE (compose secrets). Setting both is
@@ -55,6 +56,8 @@ export interface Config {
   webDir?: string;
   /** public_origin of the legacy backend: an HTTP(S) origin accepted besides loopback. */
   publicOrigin?: string;
+  /** Upstream repositories external proofs are imported from (docs/external-proofs.md §3.3). */
+  importSources?: Record<string, ImportSource>;
 }
 export function config(): Config {
   const actors = z
@@ -97,6 +100,7 @@ export function config(): Config {
     terminusPassword: secret("MDC_TERMINUS_PASSWORD"),
     webDir: process.env.MDC_WEB_DIR ?? "web/dist",
     publicOrigin: publicOrigin(process.env.MDC_PUBLIC_ORIGIN),
+    importSources: importSources(process.env.MDC_IMPORT_SOURCES),
   };
 }
 

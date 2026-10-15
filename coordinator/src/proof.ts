@@ -86,6 +86,11 @@ export class Environments {
     ).rows[0];
     return row ? (row.body as Environment) : null;
   }
+  /** The database was removed: a database later created under its name starts without one. */
+  async drop(database: string, db: Pick<pg.Pool, "query"> = this.pool) {
+    await db.query("DELETE FROM mdc_project_environment WHERE database=$1", [database]);
+    await db.query("DELETE FROM mdc_environment WHERE database=$1", [database]);
+  }
   async put(
     database: string,
     input: EnvironmentInput,

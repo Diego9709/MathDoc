@@ -16,7 +16,7 @@ export interface Environment extends EnvironmentInput {
   replaces_environment_id?: string;
   updated_by: string;
 }
-export interface Note { actor: string; at: number; text: string; attempt?: string }
+export interface Note { actor: string; at: number; text: string; attempt?: string; edited?: number }
 export interface Goal {
   key: string; statement: string; status: "insufficient" | "derivable" | "certified"; identity?: unknown;
   /** How the goal is stated (docs/mathdoc.md §4.11). */
@@ -68,6 +68,11 @@ export type WritebackPreview =
   | { status: "ready"; assembled: string | null; version: string; changes: PlannedChange[] }
   | { status: "conflict"; assembled: string | null; version: string; reason: string; details: string }
   | { status: "written"; writeback: Writeback };
+/** A certificate as LeanGround keeps it, with the definitions it uses; sketches lose new definitions to them. */
+export interface CertificateDetail {
+  id: string; goal: string; premises: string[]; source?: string;
+  definition_sources: { id: string; name: string; source: string }[];
+}
 export interface ProofRequest {
   database: string; branch: string; node: string; environment_id: string; bound: boolean;
   stale: boolean; identity?: string; error?: string; checked_version?: string;
@@ -110,6 +115,9 @@ export type Command =
   | { type: "task"; goal: string; kind: "prove" | "decompose" | "formalize"; priority: number }
   | { type: "decomposition"; certificate: string; state: "active" | "paused" | "retired"; comment?: string }
   | { type: "note"; goal: string; text: string }
+  // A note is named by its author and time.
+  | { type: "edit_note"; goal: string; note: { actor: string; at: number }; text: string }
+  | { type: "delete_note"; goal: string; note: { actor: string; at: number } }
   | { type: "negate"; goal: string }
   | { type: "policy"; review: "required" | "none" }
   | { type: "attach"; branch: string }
@@ -170,6 +178,9 @@ export const coordination = {
     fetchJson<{ revision: number; candidates: { goal: string; task: string; score: number; branches: string[]; failures: number }[] }>(
       `${base}/projects/${encodeURIComponent(id)}/next?limit=${limit}`,
     ),
+  /** A certificate with its source and the definitions it uses (for review). */
+  fact: (id: string, certificate: string) =>
+    fetchJson<CertificateDetail>(`${base}/projects/${encodeURIComponent(id)}/facts/${encodeURIComponent(certificate)}`),
   preview: (id: string, run: string) =>
     fetchJson<WritebackPreview>(`${base}/projects/${encodeURIComponent(id)}/runs/${encodeURIComponent(run)}/preview`),
   jobs: (id: string) =>
@@ -210,6 +221,56 @@ export function branchRoute(board: Board, picks: Record<string, string>): Set<st
   };
   visit(board.root);
   return used;
+}
+/** The way a branch proves its root, chosen goal by goal: what `activeRoute` returns. */
+export interface ActiveRoute {
+  /** For each goal reached, the certificate it uses (absent when it has none to use). */
+  choice: Map<string, string>;
+  /** The goals and certificates reached from the root through the choices. */
+  goals: Set<string>; facts: Set<string>;
+  /** Goals reached whose chosen certificate does not lead to complete proofs yet, in reach order. */
+  open: string[];
+  /** Whether the root is proved through the choices: an assembly can run. */
+  closes: boolean;
+}
+/**
+ * The route a branch takes through the AND-OR graph, with `draft` choices over its picks (a
+ * preview of other picks). A goal uses its draft choice, else its pick, else, as an assembly
+ * would (`branchRoute`), the certificate that proves it with the fewest premises, else its
+ * first active certificate (fewest premises first), which shows what is still missing. Only
+ * active certificates are chosen.
+ */
+export function activeRoute(board: Board, picks: Record<string, string>, draft: Record<string, string> = {}): ActiveRoute {
+  const usable = (id: string | undefined) => {
+    const f = id ? board.facts[id] : undefined;
+    return f && f.available && f.state === "active" ? f : undefined;
+  };
+  const fixed = new Map<string, string>();
+  for (const [goal, id] of [...Object.entries(picks), ...Object.entries(draft)]) if (usable(id)?.goal === goal) fixed.set(goal, id);
+  const facts = Object.values(board.facts)
+    .filter((f) => usable(f.id) && (!fixed.has(f.goal) || fixed.get(f.goal) === f.id))
+    .sort((a, c) => a.premises.length - c.premises.length || a.id.localeCompare(c.id));
+  const solved = new Map<string, Fact>();
+  for (let before = -1; before !== solved.size; ) {
+    before = solved.size;
+    for (const f of facts)
+      if (!solved.has(f.goal) && f.premises.every((p) => solved.has(p))) solved.set(f.goal, f);
+  }
+  const first = new Map<string, string>();
+  for (const f of facts) if (!first.has(f.goal)) first.set(f.goal, f.id);
+  const route: ActiveRoute = { choice: new Map(), goals: new Set(), facts: new Set(), open: [], closes: solved.has(board.root) };
+  const visit = (goal: string) => {
+    if (route.goals.has(goal)) return;
+    route.goals.add(goal);
+    const id = fixed.get(goal) ?? solved.get(goal)?.id ?? first.get(goal);
+    if (!solved.has(goal)) route.open.push(goal);
+    if (!id) return;
+    route.choice.set(goal, id);
+    route.facts.add(id);
+    board.facts[id].premises.forEach(visit);
+  };
+  visit(board.root);
+  return route;
 }
 /**
  * Whether a branch's route reaches complete proofs. A goal's own status is shared by all
@@ -286,6 +347,11 @@ export function goalStatement(board: Board, goal: string): string {
     return `${g.declaration.name}${g.declaration.binders ? ` ${g.declaration.binders}` : ""} : ${g.declaration.type}`;
   return g?.proposition ?? goalName(board, goal);
 }
+/** The statement laid out for reading: the declaration's name and binders, its type indented below. */
+export function goalStatementBlock(board: Board, goal: string): string {
+  const d = board.goals[goal]?.declaration;
+  return d ? `${d.name}${d.binders ? ` ${d.binders}` : ""} :\n  ${d.type}` : goalStatement(board, goal);
+}
 
 /** Budget by participant: each agent's own identity, spent (closed attempts) and reserved (open). */
 export function spentBy(board: Board): { actor: string; spent: number; reserved: number; attempts: number }[] {
@@ -300,12 +366,35 @@ export function spentBy(board: Board): { actor: string; spent: number; reserved:
   return [...out.values()].sort((x, y) => y.spent - x.spent || x.actor.localeCompare(y.actor));
 }
 
+/** A goal status as the page shows it; the API's words stay in `data-status`. */
+export const goalStatusLabel: Record<Goal["status"], string> = {
+  certified: "proved",
+  derivable: "provable by assembly",
+  insufficient: "open",
+};
 /** What a goal status means, for people (coordinator/src/domain.ts `recompute`). */
 export const goalStatusHelp: Record<Goal["status"], string> = {
   certified: "Proved: one certificate proves it with no premises left.",
   derivable: "Proved by combining certificates: a decomposition whose premises are proved. Assembling turns it into one complete proof.",
   insufficient: "Not proved yet: a goal it depends on still has no proof.",
 };
+/**
+ * Why the server refused a command, for people. A server older than this page answers an
+ * unknown command type with `invalid_request` on `type`: say so, since only a restart helps.
+ */
+export function refusal(e: unknown, command: Command): string {
+  const body = e instanceof ApiError && e.status === 400 ? (e.body as { reason?: string; issues?: { path?: unknown[] }[] } | null) : null;
+  if (body?.reason === "invalid_request" && body.issues?.some((i) => i.path?.[0] === "type"))
+    return `The server runs an older version of MathDoc that does not know “${command.type}”. Restart it with this version, then try again.`;
+  return e instanceof Error ? e.message : String(e);
+}
+/** A claim's remaining time, as coarse as it is read: seconds only in its last minute. */
+export function timeLeft(expires: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((expires - now) / 1000));
+  if (s < 60) return `${s} s left`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m} min left` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""} left`;
+}
 /** What a converted node's state means, for people (coordinator/src/proof.ts, worker.ts). */
 export const nodeStateHelp: Record<NodeBinding["state"], string> = {
   pending: "Converted, waiting to be submitted to LeanGround.",
@@ -396,4 +485,48 @@ export function nextStep(board: Board, branch: string, owner: boolean): NextStep
   const open = openGoals(board, view.picks);
   const names = open.slice(0, 3).map((g) => goalName(board, g)).join(", ") + (open.length > 3 ? ", …" : "");
   return { tone: "todo", text: `${plural(open.length, "goal still needs", "goals still need")} a proof: ${names}. Agents take open goals with mdc pull; you can also claim one on the task board.`, view: "tasks" };
+}
+
+/** A goal in the proof tree; `repeat` marks a goal already expanded higher up (shared, or a cycle). */
+export interface TreeGoal { goal: string; repeat: boolean; facts: TreeFact[] }
+export interface TreeFact { fact: Fact; premises: TreeGoal[] }
+const factOrder = (f: Fact) => (f.state === "active" ? 0 : f.state === "proposed" ? 1 : 2);
+/** A goal's certificates in the order they are shown: active first, then fewer premises, then by ID. */
+export const compareFacts = (a: Fact, b: Fact) =>
+  factOrder(a) - factOrder(b) || a.premises.length - b.premises.length || a.id.localeCompare(b.id);
+/** Certificates no route uses and no review waits for: paused, retired or refuted. */
+export const inUse = (f: Fact) => f.state === "active" || f.state === "proposed";
+/**
+ * The project's certificates as a tree from the root: each goal lists its certificates (active
+ * first, complete proofs before decompositions), each decomposition its premises as goals. A goal
+ * is expanded once; later occurrences are repeats. Certificates not in use expand their premises
+ * only after all others, so a goal shared with one is expanded where it is used. `others`: goals
+ * with certificates the root does not reach, e.g. negations.
+ */
+export function proofTree(board: Board): { root: TreeGoal | null; others: TreeGoal[] } {
+  const facts = Object.values(board.facts);
+  const seen = new Set<string>();
+  const unused: TreeFact[] = [];
+  const node = (goal: string): TreeGoal => {
+    if (seen.has(goal)) return { goal, repeat: true, facts: [] };
+    seen.add(goal);
+    const mine = facts
+      .filter((f) => f.goal === goal)
+      .sort(compareFacts);
+    return { goal, repeat: false, facts: mine.map((fact) => {
+      const t: TreeFact = { fact, premises: [] };
+      if (inUse(fact)) t.premises = fact.premises.map(node);
+      else unused.push(t);
+      return t;
+    }) };
+  };
+  const tree = (goal: string) => {
+    const g = node(goal);
+    for (let t; (t = unused.shift()); ) t.premises = t.fact.premises.map(node);
+    return g;
+  };
+  const root = board.root ? tree(board.root) : null;
+  const others: TreeGoal[] = [];
+  for (const g of [...new Set(facts.map((f) => f.goal))].sort()) if (!seen.has(g)) others.push(tree(g));
+  return { root, others };
 }

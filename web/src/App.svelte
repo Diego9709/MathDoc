@@ -15,6 +15,7 @@
     Trash2,
     Unlink2,
     Users,
+    BadgeCheck,
   } from "@lucide/svelte";
   import {
     nodeSession,
@@ -28,7 +29,8 @@
   import { settleEditorLayout } from "./lib/editor-layout";
   import { api } from "./lib/api";
   import { errMsg } from "./lib/format";
-  import { projectName } from "./lib/project-path";
+  import { collabPath, importPath, projectName } from "./lib/project-path";
+  import { importsApi } from "./lib/imports";
   import NodeColumn from "./components/NodeColumn.svelte";
   import EditorPane from "./components/EditorPane.svelte";
   import SearchOverlay from "./components/SearchOverlay.svelte";
@@ -36,7 +38,6 @@
   import RmDepOverlay from "./components/RmDepOverlay.svelte";
   import NewNodeOverlay from "./components/NewNodeOverlay.svelte";
   import ProjectSettings from "./components/ProjectSettings.svelte";
-  import Collaboration from "./components/Collaboration.svelte";
   import Account from "./components/Account.svelte";
   import type { NodeDetail } from "./lib/types";
   import {
@@ -57,8 +58,7 @@
     | { kind: "add-dep"; target: string }
     | { kind: "rm-dep"; target: string }
     | { kind: "new-node" }
-    | { kind: "project" }
-    | { kind: "collaboration"; project: string | null };
+    | { kind: "project" };
 
   let overlay = $state<Overlay>({ kind: "none" });
   let latexTarget = $state<{fnode: string; label: string} | null>(null);
@@ -103,19 +103,19 @@
     applyTheme(theme);
   }
 
-  // Lean nodes open the collaboration views for the proof request they belong to.
+  // Lean nodes open the collaboration page of the proof request they belong to; leaving with
+  // unsaved edits asks first (beforeunload).
+  // An imported proof (docs/external-proofs.md §3.3) has its own page: checks and source.
+  let hasImport = $state(false);
   onMount(() => {
-    const open = (event: Event) => {
-      overlay = { kind: "collaboration", project: (event as CustomEvent<string | null>).detail ?? null };
-    };
+    const database = projectName()?.split("/")[0];
+    if (database) importsApi.get(database).then(() => (hasImport = true), () => {});
+  });
+  onMount(() => {
+    const open = (event: Event) => location.assign(collabPath((event as CustomEvent<string | null>).detail ?? null));
     window.addEventListener("mdc:open-collaboration", open);
     return () => window.removeEventListener("mdc:open-collaboration", open);
   });
-  function openNode(fnode: string) {
-    overlay = { kind: "none" };
-    if (view === "force") void onForceSelect(fnode);
-    else { cancelStartup(); void nodeSession.select(fnode); }
-  }
   onMount(() => observeTheme((nextTheme) => {
     theme = nextTheme;
     applyTheme(nextTheme, false);
@@ -295,16 +295,6 @@
       initialNavigationRetry = null;
     }
   });
-
-  // §4.9: a writeback committed into this branch while the collaboration dialog was open. The
-  // view reloads at once unless that would discard edits; then the banner asks for a refresh.
-  function documentChanged() {
-    if (hasUnsavedDrafts()) {
-      refreshError = "A proof was written back into this branch. Save or discard your edits, then refresh to see it.";
-      return;
-    }
-    void refreshView();
-  }
 
   async function refreshView() {
     if (refreshing) return;
@@ -566,7 +556,8 @@
         ><Network size={15} strokeWidth={1.8} /><span>Graph</span></button>
       </div>
       <span class="toolbar-divider"></span>
-        <button class="tool icon-only" onclick={() => overlay = { kind: "collaboration", project: null }} title="Collaboration" aria-label="Collaboration"><Users size={16} strokeWidth={1.8} /></button>
+        {#if hasImport}<button class="tool" onclick={() => location.assign(importPath())} title="Imported proof: project checks and source"><BadgeCheck size={15} strokeWidth={1.8} /><span>Import</span></button>{/if}
+        <button class="tool icon-only" onclick={() => location.assign(collabPath())} title="Collaboration" aria-label="Collaboration"><Users size={16} strokeWidth={1.8} /></button>
       <button class="tool icon-only" onclick={() => overlay = { kind: "project" }} title="Project settings" aria-label="Project settings"><Settings size={16} /></button>
       <button
         class="tool icon-only"
@@ -717,8 +708,6 @@
 <div class="overlay-layer" inert={historyNavigating}>
 {#if overlay.kind === "project"}
   <ProjectSettings onClose={() => overlay = { kind: "none" }} />
-{:else if overlay.kind === "collaboration"}
-  <Collaboration project={overlay.project} onClose={() => overlay = { kind: "none" }} onOpenNode={openNode} onDocumentChanged={documentChanged} />
 {:else if overlay.kind === "search"}
   <SearchOverlay
     disabled={historyNavigating}

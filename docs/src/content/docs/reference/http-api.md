@@ -65,7 +65,7 @@ token needs the `edit` scope for every route that does not only read.
 | --- | --- | --- |
 | `GET /graph/check` | `graph check` | `{nodes, edges}`: node and edge counts. |
 | `GET /graph/roots` | `graph roots` | Unreferenced nodes, deepest first: `fnode`, `title`, `depth`, `topo_depth` (equal to `depth`), `component_size`. |
-| `GET /graph/full` | `graph full` | Node summaries with `lean` (`no_code`/`unverified`) and index-pair edges. |
+| `GET /graph/full` | `graph full` | Node summaries with `lean` (`no_code`/`unverified`), `lean_role` and `certification` (the status of `lean_certification`, or `null`), and index-pair edges. |
 | `GET /search?q=TEXT&n=N` | `search` | Title/UUID matches as `{fnode, title, depth}`; default and cap 200. |
 | `GET /resolve?ref=TITLE_OR_UUID` | node commands | `{fnode, title}`; `404` if nothing matches, `422` for a title shared by several nodes. |
 | `GET /node/ID/view` | `show` | `{node, referrers, children}`; see below. Referrers and children have `fnode`, `title`, `depth` and `formalization`. |
@@ -103,6 +103,12 @@ A node in `view`, `show` and write responses has `fnode`, `title`, `depth`,
 when no project conversion applies to the node, and otherwise one of the
 [statuses](../proofs/#statuses), with `branch` (whose conversion is shown),
 `reason`/`details` when rejected or stale, and `definition_ids` when registered.
+A definition counts as registered also after an accepted writeback, which marks
+every node it wrote `certified`. `lean_role` is `definition` or `theorem`: as the
+shown conversion binds the node, else as its Lean block declares it (its
+`lean_role` metadata, else `theorem` when it states a theorem or lemma, else
+`definition` when it defines something); `null` without a Lean block or when the
+scanner cannot read it.
 
 ### Revisions, errors and limits
 
@@ -160,7 +166,7 @@ Without TerminusDB configured, routes that check document roles answer
 | `GET /projects/ID/jobs` | member, read | The latest 100 jobs, newest first: `id`, `actor`, `kind`, `status`, `tries`, `error`, `details`, `result`, `created_at`. |
 | `GET /projects/ID/jobs/JOB_ID` | member, read | One job: `kind`, `status` (`queued`, `running`, `done`, `failed`), `tries`, `error` with `details` (LeanGround's explanation of a refusal, such as Lean's errors; at most 8000 characters) and, when done, `result`. A `submit` job's result is `{certificate, goal, mode, premises, state}` (`state`: the certificate's state on the board, e.g. `proposed`); each premise has `goal`, its placeholder `name`, `new` (not on the board before) and `statement` (`resolved`, `known`, `identity_mismatch`, `placeholder_not_found` or a LeanGround reason). |
 | `GET /projects/ID/history` | member, read | The latest 100 events, newest first: `sequence`, `actor`, `kind`, `revision`, `created_at`. |
-| `GET /projects/ID/facts/CERT_ID` | member, read | A certificate of this project, with source, from LeanGround. |
+| `GET /projects/ID/facts/CERT_ID` | member, read | A certificate of this project, with source, from LeanGround, and `definition_sources`: each definition it uses with `id`, `name` and `source` (definitions registered with a sketch are not in its source). |
 | `GET /projects/ID/nodes/UUID/draft?branch=BRANCH` | member, read on the branch | Submission draft for a theorem node of an attached branch ([Agent interface](../agents/#3-get-the-draft)); `branch` is required for a project board (`400 branch_required`). |
 | `GET /projects/ID/goals/KEY/draft?branch=BRANCH[&with=KEY,…]` | member, read (and read on `BRANCH`) | The material of a goal file (`mdc pull`) for any goal with a statement: `root` (`name`, `binders`, `type`, `definitions`, and `from`: `node` for an unchanged converted node of `BRANCH`, `declaration` for the declaration recorded on the board, `proposition` for a bare resolved proposition), available `premises` (the node's premise nodes, then the `with` goals), `definitions` (`id`, `name`, `source`, dependencies first), `root_module`, `context`, `options`, `environment_id`, `revision`, `notes` (the latest 20, newest first) and the goal's prove `task` with its lease. At most 100 `with` goals (`400 too_many_premises`); `404 unknown_goal`; `409 goal_unresolved` for a goal without a statement. |
 

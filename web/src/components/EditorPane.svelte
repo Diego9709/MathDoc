@@ -42,8 +42,8 @@
   let BlockEditorComponent = $state<typeof import("./BlockEditor.svelte").default | null>(null);
   let blockEditorPromise: Promise<typeof import("./BlockEditor.svelte").default> | null = null;
   let editorLoadError: string | null = $state(null);
-  /** Like LaTeX's mode, shared by the page's text blocks across nodes. */
-  let textPreview = $state(false);
+  /** Like LaTeX's mode, shared by the page's text blocks across nodes; text is read first. */
+  let textPreview = $state(true);
   let alive = true;
 
   function applyBlockUpdate(updated: NodeDetail, graphChanged = false) {
@@ -207,9 +207,11 @@
         <code class="meta-item fnode" title={node.fnode}><Hash size={12} strokeWidth={2} />{shortFnode(node.fnode)}</code>
         <span class="meta-item depth"><Layers3 size={12} strokeWidth={1.8} />Depth {node.depth}</span>
         <span class="meta-sep" aria-hidden="true"></span>
-        <FormalStatus language="Lean" status={node.formalization.lean} certification={node.formalization.lean_certification} />
+        <FormalStatus language="Lean" status={node.formalization.lean} certification={node.formalization.lean_certification} role={node.formalization.lean_role} />
         <FormalStatus language="Rocq" status={node.formalization.rocq} />
-        {#if node.formalization.lean_certification}
+        <!-- A definition cannot be a project's root; it is registered with the theorems using it. -->
+        {#if node.formalization.lean_certification && node.formalization.lean_certification.status !== "imported" &&
+          !(node.formalization.lean_role === "definition" && node.formalization.lean_certification.status === "not_submitted")}
           <LeanGroundSubmit
             fnode={node.fnode}
             submitted={node.formalization.lean_certification.status !== "not_submitted"}

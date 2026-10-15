@@ -1,6 +1,7 @@
 // The formal-certification dimension of a node's status (docs/mathdoc.md §4.5), computed from the
 // database's project boards and the branch's stage 4 proof requests. Local checks are a
 // separate dimension.
+import { createHash } from "node:crypto";
 import { leanContentSha256 } from "./contracts.js";
 import type { Board } from "./domain.js";
 import type { NodeBinding } from "./proof.js";
@@ -9,6 +10,9 @@ import type { Node } from "./docs/model.js";
 export type LeanCertification =
   | null
   | { status: "not_submitted" }
+  /** Upstream text of an external proof import (docs/external-proofs.md §3.3), unchanged: the
+   * project check covers it as a whole, so it is not a collaboration node. */
+  | ({ status: "imported" } & ImportedSource)
   | {
       /** `registered`: a definition node whose definitions LeanGround registered (it has no goal). */
       status:
@@ -32,7 +36,33 @@ export type LeanCertification =
       definition_ids?: string[];
     };
 
-export type CertificationLookup = (node: Node) => LeanCertification;
+export interface ImportedSource {
+  module: string;
+  path: string;
+  commit: string;
+}
+
+/** Block metadata an import writes on a node's Lean block: where the text came from, and its hash. */
+export const importedMetadata = (s: ImportedSource, content: string): Record<string, string> => ({
+  import_module: s.module,
+  import_path: s.path,
+  import_commit: s.commit,
+  import_sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+});
+
+/** The upstream file a node's Lean block holds, while its text is still the imported one. */
+export function importedSource(node: Node): ImportedSource | null {
+  const lean = node.blocks.find((b) => b.srctype === "lean");
+  const m = lean?.metadata;
+  if (!m?.import_module || !m.import_path || !m.import_commit || !m.import_sha256) return null;
+  if (m.import_sha256 !== leanContentSha256(node)) return null;
+  return { module: m.import_module, path: m.import_path, commit: m.import_commit };
+}
+
+export type CertificationLookup = ((node: Node) => LeanCertification) & {
+  /** The role the conversion shown binds the node to; null when none binds it. */
+  role: (node: Node) => "definition" | "theorem" | null;
+};
 
 interface Source {
   board: Board;
@@ -86,9 +116,7 @@ export function certificationLookup(
     (s.nodes[id].definition_nodes ?? []).some(
       (d) => sha(d) !== s.nodes[d]?.lean_content_sha256,
     );
-  return (node) => {
-    if (!node.blocks.some((b) => b.srctype === "lean")) return null;
-    const id = node.fnode;
+  const sourceOf = (id: string) => {
     let source = own.get(id);
     if (!source?.board.project) {
       // Prefer an identical conversion on the project board to a stage 4 request.
@@ -96,6 +124,14 @@ export function certificationLookup(
       for (const s of same)
         if (!source?.board.project || better(s.board, source.board)) source = s;
     }
+    return source;
+  };
+  const lookup = (node: Node): LeanCertification => {
+    if (!node.blocks.some((b) => b.srctype === "lean")) return null;
+    const imported = importedSource(node);
+    if (imported) return { status: "imported", ...imported };
+    const id = node.fnode;
+    const source = sourceOf(id);
     if (!source) return { status: "not_submitted" };
     const { board: b, nodes: bindings } = source;
     const binding = bindings[id];
@@ -114,9 +150,10 @@ export function certificationLookup(
           "the Lean text or a definition it uses changed after submission",
       };
     // A definition has no goal: it is registered, refused, or still waiting for its own
-    // dependencies to be registered (§4.5).
+    // dependencies to be registered (§4.5). An accepted writeback marks every node it wrote
+    // `certified`, its definitions included; they stay registered.
     if (binding.role === "definition" && binding.state !== "rejected")
-      return binding.state === "registered"
+      return binding.state === "registered" || binding.state === "certified"
         ? {
             ...base,
             status: "registered",
@@ -136,4 +173,10 @@ export function certificationLookup(
       goal: binding.goal,
     };
   };
+  return Object.assign(lookup, {
+    role: (node: Node) => {
+      const role = sourceOf(node.fnode)?.nodes[node.fnode]?.role;
+      return role === "definition" || role === "theorem" ? role : null;
+    },
+  });
 }

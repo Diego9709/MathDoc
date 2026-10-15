@@ -8,7 +8,7 @@ import { Store } from "../src/store.js";
 import { Terminus } from "../src/docs/terminus.js";
 import { addGoal, type Board } from "../src/domain.js";
 import { board } from "./fixtures.js";
-import { client, deploy, env, isolated } from "./harness.js";
+import { client, deploy, env, isolated, removeDatabases } from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 
 const dsn = env.dsn;
@@ -304,6 +304,7 @@ test(
       assert.equal((await http.project(id)).branches!.main.request.stale, true);
     } finally {
       Terminus.prototype.database = load;
+      await removeDatabases(db);
       await dep.close();
       await lean.close();
       await schema.close();

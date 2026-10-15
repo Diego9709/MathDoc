@@ -106,6 +106,8 @@ export interface Note {
   text: string;
   /** Set when the note came with `finish`. */
   attempt?: string;
+  /** When its author last changed the text. */
+  edited?: number;
 }
 export const NOTES_KEPT = 50;
 export const NOTE_LENGTH = 500;
@@ -248,6 +250,8 @@ export interface ProjectScope {
   root_node: string;
   /** Set when the database's environment changed: the board stays readable only. */
   superseded?: boolean;
+  /** Set when the database was removed; `database` then holds a tombstone name. */
+  removed?: { database: string; at: number; by: string };
 }
 /** One branch attached to a project board: its conversion, route picks and writebacks. */
 export interface BranchState {
@@ -867,6 +871,7 @@ export function expireLease(a: Attempt, t: Task) {
   }
 }
 const short = z.string().min(1).max(200);
+const noteKey = z.object({ actor: short, at: z.number().int().nonnegative() }).strict();
 const ttl = z.number().int().min(30).max(3600).default(300);
 export const commandSchema = z.discriminatedUnion("type", [
   z
@@ -931,6 +936,22 @@ export const commandSchema = z.discriminatedUnion("type", [
       type: z.literal("note"),
       goal: short,
       text: z.string().trim().min(1).max(NOTE_LENGTH),
+    })
+    .strict(),
+  // A note is named by its author and time, which no two notes on a goal share.
+  z
+    .object({
+      type: z.literal("edit_note"),
+      goal: short,
+      note: noteKey,
+      text: z.string().trim().min(1).max(NOTE_LENGTH),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("delete_note"),
+      goal: short,
+      note: noteKey,
     })
     .strict(),
   z
@@ -1009,6 +1030,8 @@ export const UNCHECKED = new Set<Command["type"]>([
   "sync",
   "submit_node",
   "note",
+  "edit_note",
+  "delete_note",
   "negate",
 ]);
 /** What clients send: fields with defaults may be omitted. */
@@ -1021,6 +1044,8 @@ export interface JobInput {
 export interface Grants {
   /** The actor may write the branch the command names (§2.7.7: editors pick their route). */
   editsBranch?: boolean;
+  /** The actor's token may run owner commands (`maintain`): an owner removes others' notes. */
+  maintains?: boolean;
 }
 export function command(
   b: Board,
@@ -1075,6 +1100,33 @@ export function command(
     case "note":
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       return { result: addNote(b, c.goal, { actor, at: now, text: c.text }) };
+    case "edit_note":
+    case "delete_note": {
+      requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
+      const notes = b.goals[c.goal].notes ?? [];
+      const i = notes.findIndex(
+        (n) => n.actor === c.note.actor && n.at === c.note.at,
+      );
+      requireThat(i >= 0, "unknown_note", 404);
+      // Authors change their notes; a person also those of their delegated tokens.
+      const n = notes[i];
+      const own =
+        n.actor === actor ||
+        (!actor.includes("/") && principalOf(n.actor) === actor);
+      if (c.type === "edit_note") {
+        requireThat(own, "note_author_required", 403);
+        notes[i] = { ...n, text: c.text, edited: now };
+        return { result: notes[i] };
+      }
+      // The owner also removes a note that misleads, e.g. one written by mistake.
+      requireThat(
+        own || (b.owner === principalOf(actor) && grants.maintains),
+        "note_author_required",
+        403,
+      );
+      notes.splice(i, 1);
+      return { result: { deleted: true } };
+    }
     case "negate": {
       // §2.7.5: the negation becomes a goal of its own; proving it refutes this one.
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");

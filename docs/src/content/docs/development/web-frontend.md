@@ -17,7 +17,7 @@ Paths are under `web/src/`.
 | Editor | `App.svelte`, `components/EditorPane.svelte`, `NodeColumn.svelte`, `DepthGraph.svelte`, `BlockEditor.svelte`, `AddBlockControl.svelte`, overlays for search, new nodes and dependencies; `lib/state.svelte.ts` (node session), `lib/workspace.svelte.ts` (graph refresh and invalidation), `lib/history.ts` and `lib/browser-history.ts` (back and forward). |
 | Status | `components/FormalStatus.svelte`: local check and LeanGround certification. |
 | Settings | `components/ProjectSettings.svelte`: tabs for `ProofEnvironmentForm.svelte` and `LatexProjectForm.svelte`. |
-| Collaboration | `components/Collaboration.svelte` (four views: proof overview, task board, decompositions, review; the owner and members who can edit the branch pick its route), `LeanGroundSubmit.svelte`, `lib/coordination.ts` (API client; commands carry `If-Match` and a fresh `Idempotency-Key`). |
+| Collaboration | The page at `/p/DATABASE/BRANCH/collab`, mounted by `main.ts`: `components/collab/CollabPage.svelte` (header with the problem and stages, section navigation, inspector) with its sections (`ProofTreeView`, `ProofGraph`, `ReviewSection`, `TasksSection`, `AssembleSection`, `ProjectSection`, `Inspector`, `CertificateSource`) and `collab.css`; `lib/collab.svelte.ts` (the board, refreshed every five seconds, and the commands, shared by the panels), `lib/collab-layout.ts` (stages and the graph layout), `LeanGroundSubmit.svelte`, `lib/coordination.ts` (API client; commands carry `If-Match` and a fresh `Idempotency-Key`). |
 | LaTeX | `components/LatexPreview.svelte`, `LatexImports.svelte`, `lib/latex.ts` (API), `lib/latex-session.svelte.ts` (draft requests and cancellation), `lib/latex-completion.ts`, `lib/latex-math.ts` (MathJax 4), `lib/latex-diagram.ts` (TikZ in a WebAssembly TeX worker, sanitized SVG). |
 | Text | `components/MarkdownPreview.svelte`, `lib/markdown.ts` (`marked` with math placeholders for `lib/latex-math.ts`, sanitized by DOMPurify). |
 | Shared | `lib/api.ts` (document API client; `409` and `412` are conflicts); `lib/project-path.ts` scopes branch API calls; `lib/unsaved.ts` tracks drafts and pending writes; `lib/monaco.ts`, `lib/monaco-scroll.ts` and `lib/editor-layout.ts` set up editors; `lib/theme.ts`, `lib/modal.ts`. |
@@ -64,6 +64,6 @@ image copies. The browser suite ([Development setup](../setup/#browser-tests))
 covers the project directory, node dialogs, large relation lists, CLI/browser
 conflicts, navigation, graph invariants, drafts, editor layout, LaTeX (including
 tables, colors and TikZ), Lean blocks as plain editors, and a Lean node
-submitted, assembled and written back through the collaboration views (with a
+submitted, assembled and written back through the collaboration page (with a
 LeanGround server). Frontend performance is in
 [Performance measurements](../performance/#frontend-performance).

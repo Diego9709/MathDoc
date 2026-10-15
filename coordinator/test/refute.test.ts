@@ -10,7 +10,15 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.js";
-import { actors, client, deploy, env, isolated, ready } from "./harness.js";
+import {
+  actors,
+  client,
+  deploy,
+  env,
+  isolated,
+  ready,
+  removeDatabases,
+} from "./harness.js";
 import { leangroundDouble } from "./leanground-double.js";
 import type { Board } from "../src/domain.js";
 
@@ -161,6 +169,7 @@ async function flow(leanground: { url: string; token: string }) {
     p = await http.project(id);
     assert.equal(Object.keys(p.negations ?? {}).length, 1);
   } finally {
+    await removeDatabases(db);
     await dep.close();
     await schema.close();
   }
