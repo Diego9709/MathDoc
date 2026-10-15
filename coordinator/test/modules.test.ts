@@ -273,6 +273,10 @@ async function flow(
         "theorem double_add (n : Nat) : double n + 0 = n + n := by\n  rw [Nat.add_zero, double_eq]\n",
     );
     await writeFile(join(dir, goalDir, "Work", "Main.lean"), split);
+    // A scratch file outside any goal directory is compiled on its own.
+    await writeFile(join(dir, "scratch-gf.lean"), "#check Nat.add_zero\n");
+    const scratch = await mdc("check", "scratch-gf.lean");
+    assert.equal(scratch.compiled, true, JSON.stringify(scratch));
     const checked = await mdc("check", goalDir);
     assert.equal(checked.ok, true, JSON.stringify(checked));
     assert.deepEqual(checked.premises, ["double_eq"]);
