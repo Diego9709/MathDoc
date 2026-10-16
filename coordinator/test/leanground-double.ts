@@ -31,7 +31,8 @@ type Body = Record<string, any>;
 
 /**
  * Module projects (/v1/modules/*): the theorems of a file set, by full name (`namespace` blocks
- * at column 0 prefix their names), with the signature text and whether the proof is `sorry`.
+ * at column 0 prefix their names, `_root_.` drops them), with the signature text and whether the
+ * proof is `sorry`.
  * A goal's identity is its signature text; a proof "connects" when its root has the same one.
  */
 function theorems(files: Record<string, string>) {
@@ -39,6 +40,7 @@ function theorems(files: Record<string, string>) {
     name: string;
     signature: string;
     sorry: boolean;
+    proof: string;
     file: string;
   }[] = [];
   for (const [file, text] of Object.entries(files)) {
@@ -57,9 +59,12 @@ function theorems(files: Record<string, string>) {
       const at = rest.indexOf(":=");
       if (at < 0) continue;
       out.push({
-        name: [...ns, m[1]].join("."),
+        name: m[1].startsWith("_root_.")
+          ? m[1].slice("_root_.".length)
+          : [...ns, m[1]].join("."),
         signature: rest.slice(0, at).replace(/\s+/g, " ").trim(),
         sorry: /^\s*(by\s+)?sorry\s*$/.test(rest.slice(at + 2)),
+        proof: rest.slice(at + 2),
         file,
       });
     }
@@ -326,7 +331,16 @@ export async function leangroundDouble(port = 0) {
       else if (root.sorry) violations.push("root_is_placeholder");
       else if (statements.get(body.goal?.key) !== root.signature)
         violations.push("kernel: (kernel) declaration type mismatch");
-      const premises = all.filter((t) => t.sorry && t.name !== body.root);
+      // Like the kernel's reachability: placeholders the root's proof mentions.
+      const premises = all.filter(
+        (t) =>
+          t.sorry &&
+          t.name !== body.root &&
+          root !== undefined &&
+          new RegExp(`(^|[^\\w.'])${t.name.split(".").at(-1)}(?![\\w'])`).test(
+            root.proof,
+          ),
+      );
       return { violations, premises, root };
     };
     switch (op) {

@@ -360,6 +360,9 @@ async function pullDirectory(
       ...(draft.statement.certificate
         ? { certificate: draft.statement.certificate }
         : {}),
+      ...(draft.statement.negates
+        ? { negates: draft.statement.negates.goal }
+        : {}),
       paths: start.statement,
     },
     shared: { ids: draft.shared.map((s) => s.id), files: start.shared },

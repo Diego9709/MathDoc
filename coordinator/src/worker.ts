@@ -51,8 +51,12 @@ import {
   addSharedModule,
   buildModuleBatch,
   leanBlock,
+  moduleStatement,
+  negatedDeclaration,
+  negationOf,
   projectFiles,
   statementOf,
+  userName,
 } from "./modules.js";
 import { goalName } from "./goal-view.js";
 import type { ModuleStatement, SharedModule } from "./domain.js";
@@ -564,6 +568,61 @@ export class Worker {
       },
     };
   }
+  /**
+   * ¬P in a module project (docs/mathdoc.md §4.13): `theorem MDCRefute.not_X : ¬ type_of% @X`
+   * appended to the file stating P, registered like any module statement. Its GoalKey is the
+   * one declaration mode gives `¬ (P)`, so a proof written either way refutes P.
+   */
+  private async negateModule(j: Job, b: Board, target: string) {
+    const g = b.goals[target];
+    requireThat(g?.module && b.project, "goal_unresolved");
+    const database = b.project.database;
+    const stated = await moduleStatement(
+      {
+        board: b,
+        snapshot: (branch) =>
+          this.documents({ database, branch } as ProofRequest, (d) => d.load()),
+        certificate: (id) => this.shared(b, id, true),
+      },
+      target,
+    );
+    const neg = negationOf(stated);
+    const r = await this.lean.modules("resolve", {
+      base: b.base,
+      files: neg.files,
+      shared: g.module.shared,
+      statement: neg.const,
+    });
+    const identity = identitySchema.parse(r.goal_key);
+    const name = `not_${g.declaration?.name ?? userName(g.module.const)}`;
+    await this.store.checkpoint(
+      j,
+      (b) => {
+        const key = identity.key;
+        requireThat(key !== target, "identity_mismatch");
+        addGoal(b, key, identity, name);
+        const n = b.goals[key];
+        n.module ??= {
+          const: neg.const,
+          shared: [...b.goals[target].module!.shared],
+          negates: { goal: target, path: neg.path },
+        };
+        n.declaration ??= negatedDeclaration(
+          name,
+          b.goals[target].declaration,
+          neg.const,
+        );
+        b.negations = { ...b.negations, [key]: target };
+        // The negation may already be proved.
+        const proof = Object.values(b.facts).find(
+          (f) => f.goal === key && !f.premises.length && f.available,
+        );
+        if (proof) refute(b, target, proof.id, Date.now());
+      },
+      true,
+      { goal: target, negation: identity.key, name },
+    );
+  }
   /** Record a branch conversion on the board (inside a checkpoint). */
   private applyBind(b: Board, name: string, bound: Bound, actor: string) {
     const branch = attached(b, name);
@@ -961,6 +1020,10 @@ export class Worker {
         // identity, so any proof of the same statement, however written, refutes P.
         const target = String(j.payload.goal);
         const g = b.goals[target];
+        if (b.mode === "modules") {
+          await this.negateModule(j, b, target);
+          return;
+        }
         requireThat(g?.proposition, "goal_unresolved");
         const prop = `¬ (${g.proposition})`;
         const r = await this.resolveStatement(b, prop, g.definitions ?? []);

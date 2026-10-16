@@ -117,6 +117,11 @@ export interface ModuleStatement {
   path?: string;
   /** A premise: the decomposition certificate whose placeholder states it. */
   certificate?: string;
+  /**
+   * A negation (docs/mathdoc.md §4.13): the goal it refutes, and the file of that goal's
+   * statement at whose end `¬` is stated.
+   */
+  negates?: { goal: string; path: string };
 }
 /** A shared module of a module project: files registered once, imported by statements. */
 export interface SharedModule {
@@ -1188,15 +1193,17 @@ export function command(
     }
     case "negate": {
       // §2.7.5: the negation becomes a goal of its own; proving it refutes this one. A module
-      // goal has no proposition text to negate (docs/mathdoc.md §4.13).
-      requireThat(b.mode !== "modules", "not_in_module_mode");
+      // goal's negation is stated at the end of its statement file (docs/mathdoc.md §4.13).
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       const g = b.goals[c.goal];
       const known = Object.entries(b.negations ?? {}).find(
         ([, t]) => t === c.goal,
       );
       if (known) return { result: { goal: c.goal, negation: known[0] } };
-      requireThat(g.identity && g.proposition, "goal_unresolved");
+      requireThat(
+        g.identity && (b.mode === "modules" ? g.module : g.proposition),
+        "goal_unresolved",
+      );
       requireThat(!g.refuted, "already_refuted");
       return {
         result: { queued: true },

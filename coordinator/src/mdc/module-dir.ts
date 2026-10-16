@@ -52,15 +52,22 @@ export function startingFiles(draft: ModuleDraft) {
 export function goalNotes(draft: ModuleDraft, statementPaths: string[]) {
   const c = draft.statement.const;
   const sharedPaths = draft.shared.flatMap((s) => Object.keys(s.files)).sort();
+  const negates = draft.statement.negates;
+  const where =
+    draft.statement.from === "node"
+      ? `It is stated in ${statementPaths.map((p) => `\`${p}\``).join(", ")}, a copy of the project's root statement.`
+      : negates
+        ? `It is stated at the end of \`${negates.path}\`: the negation of goal \`${negates.goal}\`, ` +
+          "whose statement is the rest of these files. A complete proof marks that goal false and refutes the decompositions using it; " +
+          "a decomposition of the negation does not."
+        : `It is stated in ${statementPaths.map((p) => `\`${p}\``).join(", ")}, ` +
+          `the decomposition ${draft.statement.certificate?.slice(0, 12)} that introduced this goal (other theorems in it can be deleted).`;
   const lines = [
     `# ${c}`,
     "",
     `Goal \`${draft.goal}\` of project \`${draft.project}\` (status: ${draft.status}).`,
     "",
-    `Prove the theorem \`${c}\`. It is stated in ${statementPaths.map((p) => `\`${p}\``).join(", ")}, ` +
-      (draft.statement.from === "node"
-        ? "a copy of the project's root statement."
-        : `the decomposition ${draft.statement.certificate?.slice(0, 12)} that introduced this goal (other theorems in it can be deleted).`),
+    `Prove the theorem \`${c}\`. ${where}`,
     "Keep its name and statement: LeanGround connects your theorem to the goal by the kernel, so a different statement is refused.",
     "",
     "Every `.lean` file in this directory is your contribution, written in any Lean you like, except:",

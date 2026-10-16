@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { z } from "zod";
 import {
   attached,
+  Fault,
   MODULE_PATH,
   requireThat,
   type Board,
@@ -216,6 +217,19 @@ export function certificateFiles(
   return undefined;
 }
 
+/**
+ * The files stating a goal: the root node's file (at its module path), the decomposition with
+ * its placeholder, or a negation: the refuted goal's files with `¬` stated at the end of one.
+ */
+export interface ModuleStatementFiles {
+  const: string;
+  from: "node" | "decomposition" | "negation";
+  node?: string;
+  certificate?: string;
+  /** A negation: the goal it refutes and the file whose end states it. */
+  negates?: { goal: string; path: string };
+  files: Record<string, string>;
+}
 export interface ModuleDraft {
   format: "mdc-module-draft/1";
   project: string;
@@ -225,23 +239,170 @@ export interface ModuleDraft {
   status: string;
   branch: string | null;
   base: { root_module: string; lean_version: string };
-  /** The files stating the goal: the root node's file, or the decomposition with its placeholder. */
-  statement: {
-    const: string;
-    from: "node" | "decomposition";
-    node?: string;
-    certificate?: string;
-    files: Record<string, string>;
-  };
+  statement: ModuleStatementFiles;
   /** Shared modules the statement uses, dependencies first; proofs import them, never change them. */
   shared: { id: string; modules: string[]; files: Record<string, string> }[];
   notes: GoalDraft["notes"];
   task: GoalDraft["task"];
 }
 
+/** Reads a statement source needs: branch documents and certificates (with their source). */
+export interface StatementSources {
+  board: Board;
+  branch?: string;
+  snapshot: (branch: string) => Promise<Snapshot>;
+  certificate: (id: string) => Promise<any>;
+}
+/** Negations of negations are followed this deep at most. */
+const NEGATION_DEPTH = 8;
+
+/**
+ * The files stating a module goal (docs/mathdoc.md §4.13). The root's file is read from a
+ * branch whose text is still the converted one; a negation is rebuilt from the goal it refutes.
+ */
+export async function moduleStatement(
+  input: StatementSources,
+  goal: string,
+  depth = 0,
+): Promise<ModuleStatementFiles> {
+  const b = input.board;
+  requireThat(Object.hasOwn(b.goals, goal), "unknown_goal", 404);
+  const g = b.goals[goal];
+  requireThat(g.identity && g.module, "goal_unresolved");
+  const m = g.module;
+  if (m.negates) {
+    requireThat(depth < NEGATION_DEPTH, "statement_unavailable");
+    const target = await moduleStatement(input, m.negates.goal, depth + 1);
+    const files = statementLayout(target);
+    requireThat(Object.hasOwn(files, m.negates.path), "statement_unavailable");
+    return {
+      const: m.const,
+      from: "negation",
+      negates: m.negates,
+      files: {
+        ...files,
+        [m.negates.path]:
+          files[m.negates.path] + negationText(target.const, m.const),
+      },
+    };
+  }
+  if (m.certificate) {
+    const cert = await input.certificate(m.certificate);
+    const files = certificateFiles(cert.source);
+    requireThat(files, "statement_unavailable");
+    return {
+      const: m.const,
+      from: "decomposition",
+      certificate: m.certificate,
+      files,
+    };
+  }
+  requireThat(m.node && m.path, "statement_unavailable");
+  // The branch asked for first, then any attached branch: the root is the same on all of them.
+  const names = [
+    ...(input.branch !== undefined ? [input.branch] : []),
+    ...Object.keys(b.branches ?? {}).sort(),
+  ];
+  for (const name of new Set(names)) {
+    if (!b.branches || !Object.hasOwn(b.branches, name)) continue;
+    const bound = attached(b, name).nodes[m.node];
+    if (!bound) continue;
+    const node = (await input.snapshot(name)).nodes.get(m.node);
+    const lean = node && leanBlock(node);
+    if (lean && sha(lean.content) === bound.lean_content_sha256)
+      return {
+        const: m.const,
+        from: "node",
+        node: m.node,
+        files: { [m.path]: lean.content },
+      };
+  }
+  throw new Fault("statement_changed", 409);
+}
+
+/**
+ * The statement's files as a goal directory has them: the root's file becomes Work/Main.lean
+ * (a proof restates the theorem in its own module, never under the statement's module name);
+ * other statements keep their paths. `mdc/module-dir.ts` `startingFiles` does the same.
+ */
+export function statementLayout(
+  s: ModuleStatementFiles,
+): Record<string, string> {
+  return s.from === "node"
+    ? { "Work/Main.lean": Object.values(s.files)[0] }
+    : { ...s.files };
+}
+
+/** A constant's name as source writes it: `_private.M.0.x` is `x` inside module M. */
+export function userName(constant: string): string {
+  const m = /^_private\.(?:.+?)\.0\.(.+)$/.exec(constant);
+  return m ? m[1] : constant;
+}
+/** A name in Lean syntax: components that are not identifiers go in «». */
+function leanName(name: string): string {
+  return name
+    .split(".")
+    .map((c) =>
+      /^[\p{L}_][\p{L}\p{N}_'!?]*$/u.test(c) && c !== "_root_" ? c : `«${c}»`,
+    )
+    .join(".");
+}
+/** The namespace negation theorems are declared in, out of the way of the statement's names. */
+export const NEGATION_NAMESPACE = "MDCRefute";
+/** The negation of `constant`: `MDCRefute.not_<its last component>`. */
+export function negationName(constant: string): string {
+  return `${NEGATION_NAMESPACE}.not_${userName(constant).split(".").at(-1)}`;
+}
+/**
+ * `¬ constant`, stated after the theorem it negates in the same file: by full names from the
+ * root namespace, so neither an open namespace nor a shadowing name changes it, and a private
+ * theorem is still in reach. `type_of%` takes the statement as elaborated; its universe
+ * parameters become the negation's.
+ */
+export function negationText(constant: string, negation: string): string {
+  return `\ntheorem _root_.${leanName(negation)} : ¬ type_of% @_root_.${leanName(userName(constant))} := sorry\n`;
+}
+/**
+ * Where `¬ goal` goes and its files: the end of the file declaring the statement constant (for
+ * the root, Work/Main.lean).
+ */
+export function negationOf(stated: ModuleStatementFiles): {
+  const: string;
+  path: string;
+  files: Record<string, string>;
+} {
+  const files = statementLayout(stated);
+  const path =
+    stated.from === "negation"
+      ? stated.negates!.path
+      : rootFile(files, userName(stated.const));
+  const negation = negationName(stated.const);
+  return {
+    const: negation,
+    path,
+    files: {
+      ...files,
+      [path]: files[path] + negationText(stated.const, negation),
+    },
+  };
+}
+/** How a negation reads on the board, from the declaration it negates (display only). */
+export function negatedDeclaration(
+  name: string,
+  d: Declaration | undefined,
+  constant: string,
+): Declaration {
+  const type = !d
+    ? `¬ ${userName(constant)}`
+    : d.binders
+      ? `¬ (∀ ${d.binders}, ${d.type})`
+      : `¬ (${d.type})`;
+  return { name, binders: "", type };
+}
+
 /**
  * The material of a module goal's directory (`mdc pull`): its statement files and the shared
- * modules they use. The root's file is read from a branch whose text is still the converted one.
+ * modules they use.
  */
 export async function moduleDraft(input: {
   board: Board;
@@ -257,44 +418,7 @@ export async function moduleDraft(input: {
   const g = b.goals[input.goal];
   requireThat(g.identity && g.module, "goal_unresolved");
   const m = g.module;
-  let statement: ModuleDraft["statement"];
-  if (m.certificate) {
-    const cert = await input.certificate(m.certificate);
-    const files = certificateFiles(cert.source);
-    requireThat(files, "statement_unavailable");
-    statement = {
-      const: m.const,
-      from: "decomposition",
-      certificate: m.certificate,
-      files,
-    };
-  } else {
-    requireThat(m.node && m.path, "statement_unavailable");
-    // The branch asked for first, then any attached branch: the root is the same on all of them.
-    const names = [
-      ...(input.branch !== undefined ? [input.branch] : []),
-      ...Object.keys(b.branches ?? {}).sort(),
-    ];
-    let text: string | undefined;
-    for (const name of new Set(names)) {
-      if (!b.branches || !Object.hasOwn(b.branches, name)) continue;
-      const bound = attached(b, name).nodes[m.node];
-      if (!bound) continue;
-      const node = (await input.snapshot(name)).nodes.get(m.node);
-      const lean = node && leanBlock(node);
-      if (lean && sha(lean.content) === bound.lean_content_sha256) {
-        text = lean.content;
-        break;
-      }
-    }
-    requireThat(text !== undefined, "statement_changed");
-    statement = {
-      const: m.const,
-      from: "node",
-      node: m.node,
-      files: { [m.path]: text },
-    };
-  }
+  const statement = await moduleStatement(input, input.goal);
   // Shared modules with their dependencies, dependencies first.
   const shared: ModuleDraft["shared"] = [];
   const seen = new Set<string>();

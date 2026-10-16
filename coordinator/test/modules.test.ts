@@ -468,6 +468,81 @@ async function flow(
       new Set(fourth.shared),
       new Set([defsPath, "Extra/Triple.lean"]),
     );
+    // Refutation (§4.13): a decomposition with a false premise. `mdc refute` states the
+    // premise's negation at the end of the decomposition's file; its complete proof marks the
+    // premise false and refutes the decomposition.
+    await as("alice")("pull", "double_add", "--no-claim", "-o", "wrong");
+    const wrongSplit =
+      `import ${defsModule}\n\n` +
+      "theorem double_succ (n : Nat) : double n = n + n + 1 := by\n  sorry\n\n" +
+      "theorem double_add (n : Nat) : double n + 0 = n + n := by\n" +
+      "  have h := double_succ n\n  unfold double at h\n  omega\n";
+    await writeFile(join(dir, "wrong", "Work", "Main.lean"), wrongSplit);
+    const viaWrong = await as("alice")(
+      "split",
+      "wrong",
+      "-m",
+      "a false premise",
+      "--wait",
+    );
+    assert.equal(viaWrong.status, "certified", JSON.stringify(viaWrong));
+    const falseGoal = viaWrong.premise_goals[0].goal as string;
+    const refuting = await mdc("refute", falseGoal.slice(0, 10));
+    assert.deepEqual(
+      [refuting.refutes, refuting.statement_from, refuting.root],
+      [falseGoal, "negation", "MDCRefute.not_double_succ"],
+    );
+    assert.deepEqual(refuting.files, ["Work/Main.lean"]);
+    const negated = await read(`${refuting.directory}/Work/Main.lean`);
+    assert.equal(
+      negated,
+      `${wrongSplit}\ntheorem _root_.MDCRefute.not_double_succ : ¬ type_of% @_root_.double_succ := sorry\n`,
+    );
+    assert.match(
+      await read(`${refuting.directory}/GOAL.md`),
+      /stated at the end of `Work\/Main\.lean`: the negation of goal/,
+    );
+    p = await http.project(id);
+    assert.equal(p.negations![refuting.goal], falseGoal);
+    assert.deepEqual(p.goals[refuting.goal].module, {
+      const: "MDCRefute.not_double_succ",
+      shared: p.goals[falseGoal].module!.shared,
+      negates: { goal: falseGoal, path: "Work/Main.lean" },
+    });
+    assert.deepEqual(p.goals[refuting.goal].declaration, {
+      name: "not_double_succ",
+      binders: "",
+      type: "¬ (∀ (n : Nat), double n = n + n + 1)",
+    });
+    // Asking again gives the same negation.
+    const again = await http.command(id, "bob", {
+      type: "negate",
+      goal: falseGoal,
+    });
+    assert.equal(again.body.result.negation, refuting.goal);
+    await writeFile(
+      join(dir, refuting.directory, "Work", "Main.lean"),
+      negated.replace(
+        / := sorry\n$/,
+        " := fun h => by\n  have h0 := h 0\n  unfold double at h0\n  omega\n",
+      ),
+    );
+    const disproved = await mdc("prove", refuting.directory, "--wait");
+    assert.equal(disproved.status, "certified", JSON.stringify(disproved));
+    await mdc("done", refuting.directory);
+    p = await http.project(id);
+    assert.equal(
+      p.goals[falseGoal].refuted?.certificate,
+      disproved.certificate,
+    );
+    assert.deepEqual(
+      [
+        p.facts[viaWrong.certificate].state,
+        p.facts[viaWrong.certificate].refuted_by,
+      ],
+      ["refuted", falseGoal],
+    );
+
     if (options.real) {
       // The real kernel decides: the premise's own proof connects.
       await writeFile(

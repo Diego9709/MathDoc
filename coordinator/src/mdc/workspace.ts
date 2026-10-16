@@ -77,10 +77,15 @@ export interface ModuleRecord {
   environment_id: string;
   /** The statement constant: the root theorem a contribution proves, unless `--root` names another. */
   root: string;
-  /** Where the starting files came from: the root node, or the decomposition stating the goal. */
+  /**
+   * Where the starting files came from: the root node, the decomposition stating the goal, or
+   * (a negation) the refuted goal's files with `¬` at the end of one.
+   */
   statement: {
-    from: "node" | "decomposition";
+    from: "node" | "decomposition" | "negation";
     certificate?: string;
+    /** A negation: the goal it refutes. */
+    negates?: string;
     paths: string[];
   };
   /** Shared modules: their IDs (sent with every submission) and their files' SHA-256 by path. */
