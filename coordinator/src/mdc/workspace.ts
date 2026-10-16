@@ -63,7 +63,7 @@ export interface FileRecord {
 }
 
 /**
- * A module project's goal directory (docs/module-certification.md §5.4): every `.lean` file in it
+ * A module project's goal directory (docs/mathdoc.md §4.13): every `.lean` file in it
  * is the contribution, except the shared modules it was pulled with, which must stay unchanged.
  */
 export interface ModuleRecord {

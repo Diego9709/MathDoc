@@ -98,7 +98,7 @@ export interface Goal {
   notes?: Note[];
   /** Set when a complete proof of the goal's negation exists (§2.7.5): the goal is false. */
   refuted?: { certificate: string; at?: number };
-  /** Module projects: where the goal is stated (docs/module-certification.md §5.4). */
+  /** Module projects: where the goal is stated (docs/mathdoc.md §4.13). */
   module?: ModuleStatement;
 }
 /**
@@ -264,7 +264,7 @@ export interface Board {
   review?: "required" | "none";
   /** Negation goal → the goal it refutes once completely proved (§2.7.5). */
   negations?: Record<string, string>;
-  /** Module projects (docs/module-certification.md §5.4); absent: declarations. */
+  /** Module projects (docs/mathdoc.md §4.13); absent: declarations. */
   mode?: "modules";
   /** Module projects: the shared modules goals are stated with, by ID. */
   shared_modules?: Record<string, SharedModule>;
@@ -403,7 +403,7 @@ export function newProjectBoard(
     },
     branches: {},
   };
-  // docs/module-certification.md §6 decision 4: decompositions take effect at once; the
+  // docs/mathdoc.md §2.6 module decision 4: decompositions take effect at once; the
   // owner can pause or retire one afterwards.
   if (env.mode === "modules") Object.assign(b, { mode: "modules", review: "none" });
   b.branches![input.document.branch] = newBranchState(b, input.document.branch);
@@ -1188,7 +1188,7 @@ export function command(
     }
     case "negate": {
       // §2.7.5: the negation becomes a goal of its own; proving it refutes this one. A module
-      // goal has no proposition text to negate (docs/module-certification.md §5.4).
+      // goal has no proposition text to negate (docs/mathdoc.md §4.13).
       requireThat(b.mode !== "modules", "not_in_module_mode");
       requireThat(Object.hasOwn(b.goals, c.goal), "unknown_goal");
       const g = b.goals[c.goal];

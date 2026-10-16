@@ -9,7 +9,7 @@
     untrack(() => void c.loadDetail(id));
   });
   const d = $derived(c.details[cert]);
-  /** A module certificate's source is its files as JSON (docs/module-certification.md §5.4). */
+  /** A module certificate's source is its files as JSON (docs/mathdoc.md §4.13). */
   function filesOf(source: string): [string, string][] | null {
     try {
       const v = JSON.parse(source);

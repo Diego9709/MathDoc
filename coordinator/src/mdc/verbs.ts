@@ -321,7 +321,7 @@ export async function pull(ctx: VerbContext, ref: string | undefined) {
 }
 
 /**
- * A module goal (docs/module-certification.md §5.4): a directory with the goal's statement files
+ * A module goal (docs/mathdoc.md §4.13): a directory with the goal's statement files
  * as the starting contribution and the shared modules they import.
  */
 async function pullDirectory(
@@ -814,7 +814,7 @@ export async function check(ctx: VerbContext, file: string | undefined) {
     project = record.project;
     leases = await renew(ctx, w);
     if (record.format === "mdc-module-dir-record/1") {
-      // docs/module-certification.md §5.4: compiled in LeanGround's sandbox and checked as a
+      // docs/mathdoc.md §4.13: compiled in LeanGround's sandbox and checked as a
       // contribution to the directory's goal; new shared files are compiled with the rest.
       const { files, newShared } = await contribution(
         resolve(ctx.cwd, file),

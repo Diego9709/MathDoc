@@ -57,7 +57,7 @@ import {
 import { goalName } from "./goal-view.js";
 import type { ModuleStatement, SharedModule } from "./domain.js";
 
-/** What converting a branch found (§4.7; module projects: docs/module-certification.md §5.4). */
+/** What converting a branch found (§4.7; module projects: docs/mathdoc.md §4.13). */
 interface Bound {
   c: Pick<Conversion, "bindings"> & Partial<Conversion>;
   goals?: Record<string, Record<string, unknown>>;
@@ -429,7 +429,7 @@ export class Worker {
     };
   }
   /**
-   * A module project's branch (docs/module-certification.md §5.4): the root node's file is the
+   * A module project's branch (docs/mathdoc.md §4.13): the root node's file is the
    * statement, and the Lean files it reaches are registered together as one shared module.
    * Nothing else is submitted: proofs come from `mdc prove` / `mdc split`.
    */
@@ -854,7 +854,7 @@ export class Worker {
         return;
       }
       case "submit_modules": {
-        // docs/module-certification.md §5.4: a contribution's files, checked by LeanGround's
+        // docs/mathdoc.md §4.13: a contribution's files, checked by LeanGround's
         // lean-modules component. New shared modules (`mdc split --shared`) are registered first.
         const p = j.payload as {
           goal: string;

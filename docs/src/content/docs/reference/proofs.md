@@ -113,7 +113,7 @@ node (`not_a_theorem_node`).
 
 In a `modules` environment every node with a Lean block is a whole Lean file, which LeanGround compiles
 as written: any Lean is allowed, namespaces, instances, attributes and `set_option` included. The design
-and its measurements are in `docs/module-certification.md` of the repository.
+and its measurements are in `docs/mathdoc.md` of the repository (§2.7.10, §3.11 and §4.13).
 
 - **Module names.** A node's file is the module its Lean block metadata names (`lean_module`, or
   `import_module` for an imported file), else the node's own module, such as `Lib.N_…`. Other files

@@ -1,4 +1,4 @@
-// Module projects (docs/module-certification.md §5.4, phase 2): every Lean node is a whole file;
+// Module projects (docs/mathdoc.md §4.13, project stage 8): every Lean node is a whole file;
 // a goal is pulled as a directory, its files are submitted as one contribution, and a certified
 // route is written back as file nodes. The first tests need nothing; the flow needs PostgreSQL
 // and TerminusDB, with LeanGround's contract double or, with the live harness variables set and

@@ -104,7 +104,7 @@ export class LeanGround {
     );
   }
   /**
-   * Module certification (docs/module-certification.md §5.2): `shared`, `resolve`, `check` and
+   * Module certification (docs/mathdoc.md §4.13): `shared`, `resolve`, `check` and
    * `submit` compile Lean files in a sandbox, so all four get the long time limit.
    */
   modules(operation: "shared" | "resolve" | "check" | "submit", body: unknown) {

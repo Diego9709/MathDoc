@@ -4,7 +4,7 @@ import { ApiError, fetchJson } from "./api";
 import { projectName } from "./project-path";
 
 export type Trust = "claimed" | "audited" | "trusted";
-/** `modules`: every Lean node is a whole Lean file (docs/module-certification.md §5.4). */
+/** `modules`: every Lean node is a whole Lean file (docs/mathdoc.md §4.13). */
 export type ProofMode = "declarations" | "modules";
 export interface EnvironmentInput {
   base_key: number;
@@ -58,7 +58,7 @@ export interface NodeBinding {
   state: "open" | "submitted" | "registered" | "rejected" | "pending" | "certified";
   goal?: string; conclusion?: string; premises?: string[]; definition_ids?: string[];
   certificate?: string; reason?: string; details?: string;
-  /** Module projects: a file a writeback created (docs/module-certification.md §5.4). */
+  /** Module projects: a file a writeback created (docs/mathdoc.md §4.13). */
   file?: { path: string; certificate?: string; root?: boolean; shared?: string };
 }
 export interface Writeback {

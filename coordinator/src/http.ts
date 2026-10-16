@@ -663,7 +663,7 @@ export function server(
         b.mode === "modules" &&
         !(checkBody && typeof checkBody === "object" && "source" in checkBody)
       ) {
-        // docs/module-certification.md §5.4: LeanGround compiles the files in its sandbox and,
+        // docs/mathdoc.md §4.13: LeanGround compiles the files in its sandbox and,
         // given a goal, checks them as a contribution to it. Nothing is recorded. A scratch
         // file (`{source}`, e.g. `#check` lines) takes the resident checker below instead: a
         // sandboxed build imports Mathlib afresh every time (60 s against 8.5 s, 3a pilot).
@@ -817,7 +817,7 @@ export function server(
         requireThat(extra.length <= 100, "too_many_premises", 400);
         const database = b.project.database;
         if (b.mode === "modules") {
-          // docs/module-certification.md §5.4: the goal's statement files and shared modules.
+          // docs/mathdoc.md §4.13: the goal's statement files and shared modules.
           send(
             res,
             200,

@@ -17,7 +17,7 @@ const file = {
   description:
     "The goal file name returned by pull; in a module project, the goal directory it returned",
 };
-/** Module projects (docs/module-certification.md §5.4): a goal is a directory of Lean files. */
+/** Module projects (docs/mathdoc.md §4.13): a goal is a directory of Lean files. */
 const files = {
   type: "object",
   additionalProperties: { type: "string" },

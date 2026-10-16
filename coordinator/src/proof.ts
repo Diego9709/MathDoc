@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS mdc_project_environment(database text PRIMARY KEY, bo
 
 const optionValue = z.union([z.string(), z.number(), z.boolean()]);
 /**
- * How a project certifies (docs/module-certification.md §5.4): `declarations` converts nodes
+ * How a project certifies (docs/mathdoc.md §4.13): `declarations` converts nodes
  * declaration by declaration (§4.7); `modules` takes every Lean node as a whole Lean file, so
  * each file brings its own `open`, `set_option` and the like and the environment has none.
  */

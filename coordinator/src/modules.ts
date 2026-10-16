@@ -1,4 +1,4 @@
-// Module projects (docs/module-certification.md §5.4): every document node with a Lean block is a
+// Module projects (docs/mathdoc.md §4.13): every document node with a Lean block is a
 // whole Lean file, compiled as written. The root node holds the statement; the Lean files it
 // imports or depends on are the project's shared modules. A contribution is a set of files
 // (`mdc prove` / `mdc split` on a pulled directory) that LeanGround compiles in a sandbox and
@@ -351,7 +351,7 @@ export interface SharedRecord {
 }
 
 /**
- * The writeback of a certified module route (docs/module-certification.md §5.4). Every file of
+ * The writeback of a certified module route (docs/mathdoc.md §4.13). Every file of
  * every certificate on the route becomes a node whose Lean block is the file as certified;
  * edges follow its imports inside the certificate and into shared modules, and lead from a
  * decomposition's root file to its providers' root files. Shared modules registered by a

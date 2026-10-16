@@ -1,4 +1,4 @@
-// Goal directories of module projects (docs/module-certification.md §5.4). `mdc pull` writes the
+// Goal directories of module projects (docs/mathdoc.md §4.13). `mdc pull` writes the
 // goal's statement files as the starting contribution, the shared modules they import (read
 // only) and GOAL.md; `mdc check` / `prove` / `split` send every other `.lean` file of the
 // directory as the contribution. Files are sent as they are: LeanGround compiles them and its
@@ -18,7 +18,7 @@ import { MdcError } from "./client.js";
 import { sha256 } from "./goal-file.js";
 import type { ModuleRecord } from "./workspace.js";
 
-/** LeanGround's limits on one contribution (docs/module-certification.md §6 item 6). */
+/** LeanGround's limits on one contribution (docs/mathdoc.md §2.6 module decision 6). */
 const MAX_FILES = 64;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 

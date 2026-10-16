@@ -1,9 +1,9 @@
 # MathDoc：产品规划、研发进度与技术细节
 
-状态：2026-10-09 精简。本文是 MathDoc 唯一的内部规划文档；它取代的早期规划、阶段报告与规范文档，以及各阶段报告的完整测量记录，
+状态：2026-10-09 精简；2026-10-16 并入模块级认证方案（§2.7.10）。本文是 MathDoc 唯一的内部规划文档；它取代的早期规划、阶段报告与规范文档，以及各阶段报告的完整测量记录，
 可用 `git show bcb161c:docs/mathdoc.md`（及其附录 A 列出的提交）查看。面向用户的英文参考在文档站 `docs/src/content/docs/`，不在本文范围内。
 
-对应代码：主要工作分支 `codex/mathdoc-coordination`；LeanGround `main` 的 `3965273`。
+对应代码：主要工作分支 `codex/mathdoc-coordination`；LeanGround `main` 的 `3965273`。模块模式（项目阶段 8）另需 LeanGround 分支 `project-checks` 的 `ac124ed`。
 
 ## 1. 本文与阅读方法
 
@@ -31,23 +31,29 @@
 | 数据库 / 工作区 | 一个 TerminusDB 数据库，有一个 owner 和按分支的角色（owner、editor、viewer） |
 | LeanGround | 外部证明服务：登记命题身份与定义、检查证明、保存认证、组装完整证明 |
 | 认证 | LeanGround 记下的一条事实：「在这些前提下，这条命题成立」。写入后不改也不删 |
-| 草图（sketch） | 带前提的认证：子引理写成证明为 `sorry` 的「前提占位」，再用它们证出目标。由组件 `lean-worker-sketch` 检查 |
-| 完整证明（leaf） | 没有前提的认证，由组件 `lean-worker` 检查 |
+| 声明模式 / 模块模式 | 项目的两种认证方式，由证明环境的 `mode` 决定。声明模式把文档节点逐条转换成 LeanGround 的声明请求（§4.7）；模块模式把每个 Lean 节点当作一个完整的 Lean 文件，一份证明是一组文件（§4.13） |
+| 草图（sketch） | 带前提的认证：子引理写成证明为 `sorry` 的「前提占位」，再用它们证出目标。声明模式由组件 `lean-worker-sketch` 检查，模块模式由 `lean-modules` 检查 |
+| 完整证明（leaf） | 没有前提的认证。声明模式由组件 `lean-worker` 检查，模块模式由 `lean-modules` 检查 |
+| 贡献 | 模块模式下为一个目标提交的一组 Lean 文件（路径 → 原文）。没有占位就是完整证明，有占位就是拆法 |
+| 共享模块 | 模块模式下，陈述要用的定义所在的文件，可以带引理；整组登记一次，之后只能被导入、不能修改 |
+| 陈述来源 | 模块模式下一个目标「在哪些文件里、由哪个常量陈述」：根目标是根节点的文件，前提是提出它的拆法里的占位 |
 | GoalKey | LeanGround 对「某个环境下的一条命题」算出的 64 位十六进制 SHA-256 身份。变量改名不改变它，陈述一改就是另一个目标 |
 | 目标 | 一条待证的命题，身份是 GoalKey，本身没有名字 |
 | 拆法 | 一条草图认证：把目标化成几个子目标 |
 | AND-OR 图 | 证明图的形状：目标只要有一种拆法走通就算证出（或），一种拆法要所有子目标都证出（且） |
-| 证明环境 | 基座（Lean 版本与库）、上下文（`open`、`set_option` 等）、选项、最低信任等级。环境是 GoalKey 的一部分 |
+| 证明环境 | 基座（Lean 版本与库）、上下文（`open`、`set_option` 等）、选项、最低信任等级、认证模式。基座、上下文、选项进入 GoalKey；改了其中任何一项（包括模式），都换一块新看板。模块模式的环境没有上下文和选项，每个文件自己写 |
 | 项目看板 | 一个数据库在一个证明环境下的协作状态：目标、认证、任务、租约、预算、各分支的路线。存在 PostgreSQL 中 |
-| 挂载分支 | 把一个分支的文档从项目根节点开始转换，并提交给 LeanGround |
+| 挂载分支 | 把一个分支的文档从项目根节点开始转换，并提交给 LeanGround：声明模式逐个节点转换（§4.7），模块模式登记根文件和它用到的共享模块（§4.13） |
 | 选择（pick）/ 路线 | 分支在某个目标上选用的认证；一个分支全部选择的集合就是它的路线 |
 | 租约 | 领取任务后获得的限时占用权，可以续期；带 epoch（代次号），过期或被他人接手后，旧持有人不能再结束任务 |
-| 组装 | 把一条路线上的认证拼成一份没有前提的源码，由 `lean-worker` 从头检查 |
-| 回写 | 把组装通过的源码写回 TerminusDB 的某个分支 |
+| 组装 | 把一条路线上的认证合成一份没有前提的证明，并从头检查：声明模式把源码拼成一个文件，由 `lean-worker` 重检（§4.9）；模块模式在常量层改名、接线，再从空环境整体重放（§4.13） |
+| 从空环境重放 | 把最终定理用到的全部常量（包括所用的 Mathlib 常量）放进一个空环境，从头过一遍 Lean 内核；不信任任何导入进来的环境状态。与 Comparator 的第 3 步相同 |
+| 回写 | 把组装通过的结果写回 TerminusDB 的某个分支：声明模式改写节点的 Lean 块（§4.9），模块模式为每个证明文件建一个节点（§4.13） |
 | 幂等键 | 请求附带的唯一 ID，服务端见到同一个键时返回第一次的结果，不会再执行一次 |
 | `mdc` | MathDoc 的命令行，是 HTTP API 的客户端 |
-| 目标草稿 | 服务端为一个目标给出的材料：结论的名字与签名、可用前提、所用定义的源码、环境上下文、任务与租约。`mdc pull` 据此写出工作文件 |
-| 工作文件 | `mdc pull` 写出的 Lean 文件，格式为 `mdc-goal-file/1`：分隔行以上是只读前段，以下是可编辑正文（§4.11） |
+| 目标草稿 | 服务端为一个目标给出的材料。声明模式：结论的名字与签名、可用前提、所用定义的源码、环境上下文、任务与租约；模块模式：陈述来源的文件和共享模块（§4.13）。`mdc pull` 据此写出工作文件或目标目录 |
+| 工作文件 | 声明模式下 `mdc pull` 写出的 Lean 文件，格式为 `mdc-goal-file/1`：分隔行以上是只读前段，以下是可编辑正文（§4.11） |
+| 目标目录 | 模块模式下 `mdc pull` 写出的目录：陈述文件作起稿，共享模块只读，另有 `GOAL.md`；除共享模块外的 `.lean` 文件都是贡献（§4.13） |
 | `.mdc/` | 工作文件旁的记录目录：每个文件对应哪个目标、租约、每次提交的幂等键与修订号。不保存令牌 |
 
 ## 2. 产品规划
@@ -75,9 +81,9 @@ MathDoc 是数学知识的协作应用。它负责提出问题、组织协作、
 |---|---|---|
 | MathDoc 协调层 | 哪些目标值得做、谁来做、投入多少、用哪种拆法；文档审阅与回写 | 任务、选择、组装请求、文档修订 |
 | LeanGround | 命题身份、定义登记、认证事实、推导、固定计划、组装认证 | GoalKey、定义 ID、认证 ID、计划 ID |
-| 验证组件 | 裁决一份证明本身对不对：`lean-worker`（完整证明、组装）、`lean-worker-sketch`（草图） | 验证证据 |
+| 验证组件 | 裁决一份证明本身对不对。声明模式：`lean-worker`（完整证明、组装）、`lean-worker-sketch`（草图）；模块模式：`lean-modules`（贡献、共享模块、组装，§4.13） | 验证证据 |
 | Agent（Codex、Claude Code、脚本） | 写证明、提拆法，通过 `mdc` 或 HTTP 接口交付 | 提交 |
-| 维护者 | 冻结根陈述，审阅拆法是否值得做，组装、接受回写 | 决定 |
+| 维护者 | 冻结根陈述，审阅拆法是否值得做（模块模式下拆法提交即生效，维护者事后暂停或撤下），选路线、组装、接受回写 | 决定 |
 
 协调层可以记录「某个 Agent 声称完成了」，但只有读取并核对 LeanGround 的认证之后，才显示数学上的进展。
 
@@ -85,7 +91,7 @@ MathDoc 是数学知识的协作应用。它负责提出问题、组织协作、
 
 **一个 Project 对应一个数据库，证明一条定理（根）**，它由三样东西固定：
 
-- 数据库的证明环境；
+- 数据库的证明环境（含认证模式）；
 - 根节点；
 - owner、成员和预算。
 
@@ -124,7 +130,8 @@ Project（= 一个 TerminusDB 数据库）
 
 - 已选择的目标，严格使用所选的认证；
 - 未选择的目标，在启用的认证里自动选，前提少的优先；
-- 节点转换或重新提交时得到的认证，自动成为该分支在这个目标上的选择；owner 可以改。
+- 节点转换或重新提交时得到的认证，自动成为该分支在这个目标上的选择；owner 可以改。模块模式下文档节点不提交证明，
+  选择只来自 owner 或分支 editor 的 `pick`。
 
 **目标状态与路线状态不同**：目标状态（`insufficient` / `derivable` / `certified`）各分支共享，表示存在某种组合
 能证出它；路线是否闭合是每个分支自己的。界面分别显示这两者。
@@ -132,13 +139,14 @@ Project（= 一个 TerminusDB 数据库）
 ### 2.4 大规模协作的原则
 
 1. **人的审阅只花在机器替代不了的地方。** 组装会把整条路线从头检查，所以证明写得对不对不需要人看。必须由人看的只有两件事：
-   - 根陈述（及其用到的定义）是否忠实表达了要证的数学。这是唯一的信任根，开局就冻结。
+   - 根陈述（及其用到的定义）是否忠实表达了要证的数学。这是唯一的信任根，开局就冻结。模块模式下就是根节点的文件和它用到的共享模块。
    - 拆法是否值得做。草图检查只保证「子目标全真 ⇒ 目标真」，不保证子目标为真，也不保证子目标更容易。
      拆法新引入的定义不需要做忠实性审阅（最终组装的结论是根陈述）[推断]。
 2. **拆法有生命周期，类似合并请求（PR）**：`proposed` → `active` → `paused` / `retired` / `refuted`。
    新拆法默认 `proposed`，未经审阅不参与调度（项目决定 B）。项目阶段 3 已实现（§3.5）；`refuted` 在阶段 5 实现（§3.7）。
-   模块模式的项目例外：新拆法直接是 `active`，owner 可以事后暂停或撤下（`docs/module-certification.md` §6 决定 4，2026-10-15）。
+   模块模式的项目例外：新拆法直接是 `active`，owner 可以事后暂停或撤下（§2.6 模块决定 4，2026-10-15）。
 3. **证否是必需品。** 证出 ¬P 后，含 P 的拆法自动标为 `refuted`。项目阶段 5 已实现，由 MathDoc 解析 ¬P，不需要 LeanGround 改动（§3.7）。
+   模块模式目前没有证否：模块目标没有命题文本可以取否定（§4.13）。这与本条原则冲突，列为模块模式成为默认之前要补的事（§2.7.10）。
 4. **共享失败记忆。** LeanGround 按设计不保存失败尝试；协调层给每个目标挂尝试笔记（试了什么、卡在哪个证明目标）[推断：对 Agent 群体最省预算]。项目阶段 3 已实现（§3.5）。
 5. **租约只用来减少重复，不是独占权。** 过期后才交上来的正确证明照样接收（已实现）。
 6. **形式图由认证推导，不手工维护。** 「且」边来自草图的前提；手工维护的依赖边只保留给非形式化的知识依赖。
@@ -164,14 +172,14 @@ Project（= 一个 TerminusDB 数据库）
 
 | 动词 | 做什么 |
 |---|---|
-| `mdc pull GOAL [--branch B]` | 领取目标，写出工作文件（§4.11）；之后的 `mdc` 调用顺带续租（项目阶段 2 决定 1） |
-| `mdc prove FILE` | 把文件作为完整证明提交 |
-| `mdc split FILE -m 说明` | 把文件作为拆法提交；服务端自动为新子目标登记陈述 |
+| `mdc pull GOAL [--branch B]` | 领取目标，写出工作文件（§4.11），模块模式下写出目标目录（§4.13）；之后的 `mdc` 调用顺带续租（项目阶段 2 决定 1） |
+| `mdc prove FILE\|DIR` | 把文件或目录作为完整证明提交 |
+| `mdc split FILE\|DIR -m 说明` | 把文件或目录作为拆法提交；服务端自动为新子目标登记陈述。模块模式下 `--shared FILE` 把新定义所在的文件先登记成共享模块 |
 | `mdc done [--spent N]` | 结束租约并报告实际花费 |
 
 之后的动词：
 
-- `mdc check FILE`：只检查不入库，等 LeanGround 提供接口（项目决定 E）；
+- `mdc check FILE`：只检查不入库，2026-10-10 已实现（§3.9）；模块模式下 `mdc check DIR` 编译目录并按目标检查，临时文件仍走常驻检查（§4.13）；
 - `mdc goals`、读取单个目标（`mdc goal`）、维护者用的 `mdc review` 和 `mdc branch new --pick` 已在阶段 6 实现（§3.8）；
   `mdc next`、`mdc refute` 已在阶段 5 实现。
 
@@ -220,7 +228,7 @@ Project（= 一个 TerminusDB 数据库）
 | 编号 | 决定 |
 |---|---|
 | A | 一个 Project 对应一个数据库 |
-| B | 新拆法默认 `proposed`，可以按项目配置（项目阶段 3 已实现 `policy`）。模块模式的项目建立时就不要求审阅，新拆法直接生效，owner 事后停用（2026-10-15，`docs/module-certification.md` §6 决定 4） |
+| B | 新拆法默认 `proposed`，可以按项目配置（项目阶段 3 已实现 `policy`）。模块模式的项目建立时就不要求审阅，新拆法直接生效，owner 事后停用（2026-10-15，§2.6 模块决定 4） |
 | C | 分支路线存在看板里 |
 | D | 现有按分支建立的证明请求只读保留；新请求一律进入 Project 看板 |
 | E | `mdc check` 需要的草稿检查由 LeanGround 提供接口 |
@@ -354,6 +362,44 @@ Project（= 一个 TerminusDB 数据库）
 13. **节点状态 `registered`**：定义节点没有目标，已登记时显示 `registered`（附定义 ID），被拒时仍是 `rejected`，其余显示 `not_submitted`。
     回写新建的节点（没有节点的前提和定义）按写入的内容记为该分支已转换的节点，所以立即显示其目标的状态或 `registered`。
 
+**模块级认证的维护者决定**（2026-10-15，引用时写「模块决定 1」等；背景见 §2.7.10）：
+
+1. **两种模式并存**：已有项目照旧用声明模式；新项目默认用哪种，等同一代理在两种模式下的对照之后再定。
+2. **贡献之间不能互相导入**：想复用别的贡献里的辅助引理，就把它提升为目标。贡献之间只通过冻结陈述耦合。
+3. **名字冲突由组装时统一改名解决**：每份贡献的常量加上自己的前缀（阶段 0 已验证）。
+4. **拆法不等审阅**：提交即生效，owner 事后暂停或撤下。本节项目决定 B 与 §2.4 第 2 条已注明。
+5. **沙箱**：正式环境用 Linux 上的 landrun；macOS 本机用系统自带的 `sandbox-exec`，阶段 1 只实现了后者。
+   没有沙箱时，认证的可信等级降为 `claimed`。
+6. **单份贡献的上限**：64 个文件、每个文件 2 MB、整份编译 900 秒（与现有 `submit` 的上限一致），按试点再调。
+
+**项目阶段 8（模块级认证）实现中定下、待评审的细节**（2026-10-15，§4.13）：
+
+1. **模式放在证明环境里**：`mode` 缺省为 `declarations`；`modules` 的环境不许有 context 与 options。环境 ID 只在模块模式时把 `mode` 算进去，
+   所以已有环境的 ID 不变；v1 环境合同是冻结的，没有加字段（§4.6）。
+2. **节点即文件**：模块名依次取 Lean 块元数据 `lean_module`、`import_module`（导入项目的文件节点），都没有时用节点自带的 `module`（如 `Lib.N_<id>`）。
+   原文不改：文件自己写 `import`。
+3. **根与共享模块**：根节点的文件是陈述；从根出发沿依赖边或文件头的 `import` 能到的 Lean 节点（跳过写回建的证明文件），挂载时整组登记成一个共享模块。
+   根文件里要恰好有一条 `sorry` 定理，或用元数据 `lean_conclusion` 指明。
+4. **目标的陈述来源记在看板上**：根目标是根节点及其文件路径；前提是第一次提出它的拆法认证加占位名。拉取目标时由此写出起稿文件。
+5. **前提的完整身份由 LeanGround 给出**：模块认证只记前提的 GoalKey，`/v1/modules/submit` 的回复另带 `premise_goals`（GoalKey → 完整身份），
+   MathDoc 据此为前提登记目标，不再像声明模式那样从占位文本重新 `resolve`。
+6. **新命令 `submit_modules`**：`files`、`root`、`shared`、可选 `new_shared`、`mode`（`leaf` / `sketch`）。完整证明还是拆法由 LeanGround 在入库之前核对
+   （`has_premises` / `no_premises`），`mdc` 不在本地扫描。声明模式的 `submit`、`resolve`、`submit_node`、`negate` 在模块项目里以 `not_in_module_mode` 拒绝。
+7. **组装一律用 `lean-modules`**，不管命令里给的组件是什么。
+8. **写回为每个证明文件建一个节点**：根节点的文本不改，只记最终认证；写回建的节点标 `contribution`，以后挂载时不当作共享模块；
+   同一份认证再写回时复用已有节点。
+9. **请求体上限**：命令接口与模块检查从 2.2 MB 放宽到 32 MB（LeanGround 的上限），因为一份贡献可以有 64 个文件；其他接口不变。
+10. **LeanGround 侧补了四处**：`resolve` 可省陈述名（取唯一的占位）；`submit` 接受 `mode`；回复带 `premise_goals`；共享模块读回时带文件。
+
+**阶段 8 试点（3a）中定下的事项**（2026-10-15/16，§3.11）：
+
+1. **试点在测试实例上做**：另起 MathDoc（17943，单独的 PostgreSQL 库）和 LeanGround（28765，`project-checks` 工作树，单独的库），正式服务不动。
+2. **临时文件检查走常驻进程**：模块项目里只给源码的检查（`{source}`，例如 `#check` 文件）发给 LeanGround 的常驻检查；只有目标目录的检查在沙箱里编译。
+   原因：沙箱编译每次重新导入 Mathlib，60 秒以上；常驻检查热的时候 0.01–0.06 秒（n = 2）。
+3. **遗留的租约可以由本人或 owner 释放**：结束租约原来只限持有人；现在委托令牌背后的本人、带 `maintain` 的 owner 也可以，但只能「释放、花费为 0」（§4.3）。
+4. **3a 改用 Codex**（维护者决定，2026-10-15）：dsh 上的 GLM-5.3 与 `deepseek-v4.1-flash` 因模型和通道问题一直没有走到第一次提交（§3.10），
+   所以这一轮由 Codex 完成，不再当作两种模式的对照。
+
 ### 2.7 路线图
 
 迁移阶段 0–5 已经完成（§3.2），后续工作按项目阶段推进。下表回答：每个阶段做什么、怎样算完成。
@@ -366,8 +412,10 @@ Project（= 一个 TerminusDB 数据库）
 | 4 Agent 身份 | 委托子令牌、`mdc mcp` | 两个命令行 Agent 各用自己的子令牌：审计记录可以区分，子令牌无法执行维护者命令 | 已实现，待评审；本机 LeanGround 上的验收测试通过（§3.6、§3.7 末） |
 | 5 规模与证否 | 看板拆表、证否、`mdc next` 调度 | 参与者数、目标数和写入延迟的目标值在本阶段开始前定下 | 已实现，待评审；k = 20、n = 1000 下 p95 达标；本机 LeanGround 上的验收测试通过（§3.7） |
 | 6 维护者工作流与部署稳健性 | `mdc goals / goal / review / pick / branch new --pick`、分支 editor 改选择、维护者命令可重放；LeanGround 超时与作业退避、TerminusDB 冲突重试、部署包的工作动词 | 只用 `mdc` 完成审阅和开路线分支；LeanGround 冷启动和短暂中断不需要人工处理；导出的部署连真实 LeanGround 走通证明流程（§2.7.7） | 已实现，待评审；本机 LeanGround 与本机部署上的验收测试通过（§3.8） |
+| 7 IMO 实战 | 用 IMO 题跑通「题面 → 陈述 → 拆解 → 证明 → 组装 → 写回」并记录指标（§2.7.8） | 三轮各有记录；至少第 1 轮组装通过并写回 | 第 1 轮组装并写回；第 2 轮的记录见 §3.9 |
+| 8 模块级认证 | 认证单位由一条声明改为一组完整的 Lean 模块：LeanGround 组件、MathDoc 接入、试点（§2.7.10） | 分期验收见 §2.7.10 | 阶段 0–2 已实现，待评审，未部署；3a 试点在测试实例上完成；3b 未开始（§3.11） |
 
-下面 §2.7.2–§2.7.5 是已完成阶段的计划摘要，§2.7.7 是阶段 6 的计划。
+下面 §2.7.2–§2.7.5 是已完成阶段的计划摘要，§2.7.7、§2.7.8、§2.7.10 分别是阶段 6、7、8 的计划。
 
 #### 2.7.1 已完成阶段的计划
 
@@ -491,12 +539,49 @@ dsh 的沙箱又不限制读和网络，模型的训练数据也可能见过这�
 
 #### 2.7.9 未排期的方案
 
-两份方案单独成文，定下来后再并入本文：
+单独成文的方案，定下来后再并入本文：
 
 - `docs/external-proofs.md`：外部证明的导入与项目核验（2026-10-14；第一版已实现，10 份配置在核验）。
-- `docs/module-certification.md`：模块级认证，协作证明的认证单位由一条声明改为一组完整的 Lean 模块（2026-10-14 初稿；阶段 0 原型、
-  阶段 1 LeanGround 组件、阶段 2 MathDoc 接入已完成，代码已提交、未部署；阶段 3a 试点在测试实例上完成，IMO 029 由 Codex 用模块模式
-  71 分钟证完、组装并写回（§5.6），不能当作两种模式的对照；阶段 3b 未开始）。
+
+模块级认证的方案（原 `docs/module-certification.md`）已在 2026-10-16 并入本文：计划在 §2.7.10，决定在 §2.6，各阶段报告在 §3.11，
+技术规则在 §4.13，缺口在 §5。原文件只保留一张章节对照表；方案原文与逐项测量见 `git show 281a937:docs/module-certification.md`。
+
+#### 2.7.10 阶段 8：模块级认证
+
+**目标**：协作证明的认证单位由「一条声明的源码」改为「一组完整的 Lean 模块」（贡献），同时保留目标、GoalKey、拆法的且/或结构、
+路线、目标状态、可信等级、笔记、租约和调度。
+
+**背景**（2026-10-14 的分析）[实测，来源依次为 LeanGround `docs/13` §5.1 与 §2.2、本文 §3.9、OpenAI `math` 仓库 `1581d4cbd`]：
+
+| 现象 | 数据 | 所以 |
+|---|---|---|
+| LEAP（现成的 IMO 题 Lean 证明集）原样提交 | 改用 Lean 解析器后 17 / 42 通过；被拒的 20 份在正文写了顶层 `open`、`variable`、`set_option`、`section` | 真实证明的常见写法，大半过不了声明模式的形态规则 |
+| Mathlib 文件整个转成节点 | 0 / 8,311 | 节点格式装不下一般的 Lean 文件 |
+| LeanGround 的缺陷 | 9 个里有 8 个来自「用自己的近似去模拟 Lean 的解析和展开」 | 只要还在源码层近似 Lean，就会有下一个缺陷 |
+| 第 2 轮第一个项目（029） | 根目标的 11 次拆解全部被拒，约 2 小时 14 分，其中 3 次是 LeanGround 缺陷 | 时间耗在认证管线上，不在数学上 |
+| OpenAI 的 5 道题 | 每题 16–288 个文件，按论文的引理和文件拆；中间没有认证，只在最后用 Comparator 核验一次；普遍用命名空间、`instance`、属性、`set_option` | 按声明模式的格式一份也交不进来；但「只在最后核验」失去了「半成品可以放心引用」这一协作前提 |
+
+所以本阶段借用 OpenAI 做法里的「完整的 Lean」和「最后一次可复核的整体核验」，保留 MathDoc 的中间认证。
+
+**方案要点**（规则见 §4.13）：
+
+- 贡献是一组完整的 Lean 模块，任意写法；占位是证明体只是 `sorry` 的定理，根定理用到的占位就是前提。
+- 认证：沙箱里编译，直接读 `.olean` 取常量，从根定理收集公理，把目标的陈述来源接到根定理上，由内核判断证的是不是这个目标。
+- 组装：常量层改名、接线、接到冻结陈述，从空环境整体重放；不在源码层拼接，也不重新编译。
+- 新目标的陈述用到的定义必须放进共享模块，不能由陈述方和证明方各写一份：归纳类型和结构体的两份副本，内核认为是不同的类型（LEAP PB-Basic-016）。
+
+**分期与验收**：
+
+| 分期 | 内容 | 验收 | 状态 |
+|---|---|---|---|
+| 0 原型 | 脚本，不改服务：Seymour 拆成 3 个前提；029 第 2 轮的 13 份认证改写成模块；LEAP 42 份原样 | 组装结论与 Comparator 一致；029 的 13 份全部通过；LEAP 通过数等于能编译的份数 | 达到（§3.11） |
+| 1 LeanGround 组件 | `lean-modules` 组件与 `/v1/modules/*` | 阶段 0 的三组经服务通过；名字遮蔽、宇宙特例等对抗用例成立；沙箱里写用户目录失败 | 达到（§3.11）；未部署 |
+| 2 MathDoc 接入 | 建项时选模式、目录式动词、写回文件节点、新的审阅策略 | 一个模块模式项目从建项走到写回；声明模式不变，现有测试全过 | 达到（§3.11）；未部署 |
+| 3a 试点 | IMO 029 用模块模式重做 | 记下用时、提交次数、拒绝次数与原因、人工介入次数 | 达到；由 Codex 完成，不是两种模式的对照（§3.11） |
+| 3b 试点 | 在已导入的 Seymour 上形式化论文第 4–5 节的推论（上游只形式化了主定理） | 推论组装通过并写回 | 未开始；前提是「导入项目接着协作」（§5） |
+
+**成为新项目默认之前要做完的**（模块决定 1；细项见 §5「模块模式」）：部署与 Linux 沙箱、模块检查的常驻进程、证否、
+每个会话一个令牌、同一代理在两种模式下的对照。
 
 ## 3. 研发进度
 
@@ -518,6 +603,9 @@ dsh 的沙箱又不限制读和网络，模型的训练数据也可能见过这�
 | 项目阶段 5：规模与证否 | 已实现，待评审；本机 LeanGround 上验收测试通过（2026-10-09，§3.7 末） | 2026-10-08 | `ed50b47`、`4e1ec62`、`0e5b843` 及其后的文档提交 |
 | 项目阶段 6：维护者工作流与部署稳健性 | 已实现，待评审；本机 LeanGround 与本机部署上验收测试通过 | 2026-10-09 | `7123da5`、`ec06d40`、`fbfb91c` 及其后的文档提交 |
 | 第二次合并 `main`（§3.2 末） | 冲突已解决，保留本分支的实现 | 2026-10-15 | `a08f4f4`（合并）、`b1540fd`（移植修复） |
+| 外部证明导入与项目核验（`docs/external-proofs.md`） | 第一版已实现，10 份配置跑过项目核验 | 2026-10-14 | `c6ecd50`；LeanGround `7818a19` |
+| 项目阶段 8：模块级认证 0–2 | 已实现，待评审；测试实例上验收通过，未部署 | 2026-10-14/15 | LeanGround `ac124ed`；MathDoc `5e6e2a3` |
+| 项目阶段 8：3a 试点 | 完成（测试实例，Codex）；试点中补了两处 | 2026-10-15/16 | `bb99c66`、`659c185`、`f47a1c1`；记录 `281a937` |
 
 「待评审」的意思是：作者已按验收标准自测，还没有经过维护者评审，也没有在真实部署上验收。
 
@@ -1146,6 +1234,72 @@ LaTeX 补全列表只在滚动位置真的变化时关闭；
   - [实测] 只有 dsh 自己配置时一次性对话答对 17×23；清空环境、只塞一个假的 `DSH_MODEL` 去运行证明命令行，`proof_attack` L1 证出核心 Lean 目标，
     记录的模型是 `deepseek-v4.1-flash`；插件包 110 个测试、EvoHarness 1236 个测试通过（另有 8 个测试文件引用 `0b7bcfb` 删掉的模块，收集即失败，与本次无关）。
   - 例外：EvoHarness 的旧启动脚本 `scripts/dsh_proof.sh` 仍按原设计让 dsh 会话用 EvoHarness 的密钥；研究模式 `evo_start` 的模型仍由插件配置或 dsh 环境的 `DSH_MODEL` 给出（研究模式未安装）。
+- **alaya 通道上的 dsh 会话不调用工具**（2026-10-15，3a 试点，未解决）：[实测，dsh 会话日志] `deepseek-v4.1-flash` 经 alaya 通道（OpenAI completions 接口）
+  有 5 轮在结尾把工具调用写成文字（形如 `<parameter name="command" …>`），dsh 当作回答结束回合，每次要人说「继续」；
+  同一通道的 GLM-5.3 连续 3 轮只思考、超出输出上限，没有调用工具。与 MathDoc 无关；dsh 会话还误用了 `standard` 预设。
+- **多个会话共用一个身份时领取会卡住**（2026-10-15，3a 试点，部分处理）：工作区里的会话都用同一个委托令牌。一个会话没运行 `mdc done` 就停了，
+  它的租约要一小时后才过期；新会话把它当成别的会话的，`next --claim` 回答 `nothing_to_do`。当时 owner 在网页上也释放不了，
+  现在本人或 owner 可以释放（§2.6 阶段 8 试点事项 3）。`mdc pull` 遇到已有的目标目录仍以 `file_exists` 拒绝，没有改。
+- **网页不提示缺少哪种权限**（2026-10-16，3a 试点）：浏览器用代理的委托令牌（只有 `work`）登录时，选路线、组装、写回的按钮都不显示，
+  也不说明原因；换成 owner 令牌后正常。
+- **内存紧张时模块检查与组装变慢**（2026-10-15/16）：[实测] 同一个登记请求连发两次，23 秒降到 4.3 秒；3a 的组装载入 Mathlib 28.4 秒、
+  从空环境重放 18.1 秒，阶段 0 的同类测量是 2.5–7.8 秒与 2.8–3.1 秒；当时交换区 10 GB 用了 9.4 GB [推断：慢在内存，没有在空闲时重测]。
+
+### 3.11 项目阶段 8 的要点（模块级认证）
+
+计划见 §2.7.10，规则见 §4.13。下面只保留关键数字；逐项测量见 `git show 281a937:docs/module-certification.md` §5.1–§5.6，
+LeanGround 侧见 LeanGround `docs/14`。
+
+**阶段 0：原型**（2026-10-14）
+
+- 目的：不改服务，用脚本验证三件事成立：读 `.olean` 认证、常量层组装、从空环境重放。
+- 方法：检查程序约 330 行 Lean，只用核心库；编译用 `lake env lean`，没有沙箱；各组 n = 1。
+- 结果 [实测]：
+  - Seymour（Lean 4.34.1）：共享层 4 个文件；拆法识别出 3 个前提；三个提供者是上游原文件（7、27、4 个文件），一字不改。组装改名合并 387 个常量、
+    接线 3 处，从空环境重放 21,844 个常量，7.3 秒通过。7 个反例（夹带 `sorry`、自声明公理、接错提供者、把深层引理换成 `True.intro` 等）全部被拒。
+  - 029 第 2 轮：13 份认证的原文加一行 `import` 就成了模块，全部通过；组装 14 份贡献，从空环境重放 10,689 个常量，3.1 秒。
+  - LEAP 42 份：能编译的 36 份里原样通过 35 份；PB-Basic-016 的陈述和证明各有一份归纳类型 `Color`，改名后成了两个类型。
+    把定义改放进共享模块后 36 / 36。
+  - 成本：编译一个导入 Mathlib 的模块 3.9–7.2 秒、约 5.9 GB；读 `.olean`、基座只导入一次后，每份认证 0.03–1.0 秒。
+    最初用 `importModules` 导入贡献，每份 32–41 秒，029 的组装要导入 15 次 Mathlib，没有跑完。
+- 由此改的设计：认证读 `.olean`，不导入贡献；「定义模块」改为可以带引理的「共享模块」；根陈述也作为一份贡献经内核连接
+  （029 的陈述含 `{(k : ℕ) | …}`，生成的辅助常量名字随声明变，结构比较判为不等，内核连接通过）；陈述用到的定义必须来自共享模块。
+
+**阶段 1：LeanGround 组件**（2026-10-15，LeanGround `ac124ed`）
+
+- 结果 [实测]：模块测试现在共 17 项（纯逻辑 6、真实 Lean 11），原有测试全过。阶段 0 的三组经服务：029 13 / 13 通过，根目标的 GoalKey
+  与正式库里声明模式的 `aff52af2…` 相同，组装从空环境重放 10,689 个常量；Seymour 组装重放 21,845 个常量；LEAP 能编译的 36 份全部认证并组装。
+- 实施中改掉的：共享模块记进 GoalKey 的「定义」一项，不进项目开头，否则 029 的根陈述和根认证环境对不上；Lean 只认 LEAN_PATH 上第一个含模块顶层目录的条目，
+  所以每次编译只给一个合并目录。
+- 比声明模式严：连接只许宇宙参数个数相同，宇宙多态的证明连不到 `Type` 版本的目标（少收，不误收）。
+
+**阶段 2：MathDoc 接入**（2026-10-15，MathDoc `5e6e2a3`）
+
+- 结果 [实测]：`modules.test.ts` 6 项；协调层 83 项里 74 过、9 项要正式 LeanGround 而跳过；`scripts/check native` 全过。
+  一个模块模式项目从建项走到写回，替身与测试 LeanGround 上各一遍（真实的 6.2 秒）。
+  一条 Mathlib 命题走同一流程（n = 2）：建项 89 / 48 秒、`mdc check` 47 / 15 秒、提交 2–3 秒、组装 5–8 秒；同一个登记请求连发两次 23 → 4.3 秒，
+  慢在内存紧张时载入 Mathlib [推断]。
+- 发现的问题：模块认证只记前提的 GoalKey，补了 `premise_goals`；「证的是不是同一命题」由内核按定义相等判断
+  （`double n + 0 = n + n` 能证 `double n = n + n`，因为 `n + 0` 按定义就是 `n`）；写回的文件节点要标记，否则下次挂载会被当成共享模块；
+  协调层 2.2 MB 的请求体上限装不下大的贡献。
+
+**阶段 3a：IMO 029 试点**（2026-10-15/16）
+
+- 方法：测试实例（§2.6 阶段 8 试点事项 1）上的数据库 `imo-pbadvanced029-m`，根目标与第 2 轮相同（`aff52af2…`）；代理说明沿用第 2 轮的规则，
+  只改模式必须改的地方。
+- 开跑前的环境问题（不计入结果）：测试库缺 Mathlib 的声明索引，`lemma` 必定为空（维护者从正式库复制）；临时文件检查 60 秒（改走常驻检查，`659c185`）；
+  停掉的会话占着领取、owner 释放不了（`f47a1c1`）；GLM-5.3 与 `deepseek-v4.1-flash` 在 alaya 通道上的工具调用问题（§3.10）。
+- 结果 [实测，Codex 桌面版，模型 `gpt-6-luna`，n = 1]：
+  - 71 分钟到根目标完整证明通过；11 次提交（4 个拆法、7 个完整证明），1 次以 `has_premises` 在入库之前拒绝；6 个目标；
+    人工介入 2 次（「不要用沙箱」「开始证明」）。
+  - 拆法：根目标 → 必要性（n = 2）与充分性 → 自然数整除核心 → 素数幂版本 → 每 p 项一组、模 p 的同余；根目标的完整证明 700 行，最难的同余 428 行。
+  - 子目标证完后，Codex 没等组装，自己把文件逐层合并，给每一层交了完整证明。
+- 组装与写回（owner，2026-10-16）[实测]：owner 为 4 个目标选用拆法，路线上 6 份认证、接线 5 处，从空环境重放 10,202 个常量，只用三条标准公理；
+  载入 Mathlib 28.4 秒、重放 18.1 秒（§3.10）；写回新建 6 个文件节点，根节点只记最终认证。
+- 结论：模块模式第一次在真实的 IMO 级题目上完整走通；这一轮没有一次因源码形态规则或 LeanGround 缺陷被拒。代理与模型都换了，
+  所以用时与行数的差别不能算在模式头上，不是两种模式的对照。
+
+**未覆盖**：见 §5「模块模式」。
 
 ## 4. 技术细节
 
@@ -1159,7 +1313,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
   ├─ 文档接口 ──────────► TerminusDB（文档、依赖、历史）
   ├─ LaTeX 预览 ────────► renderer/renderer.py 常驻进程（plasTeX）
   ├─ 协作接口 + 作业 ───► PostgreSQL（工作区、环境、看板、命令、事件、作业）
-  └─ worker 作业 ───────► LeanGround 事实接口（/v1/facts/…、/v1/bases/…）
+  └─ worker 作业 ───────► LeanGround 事实接口（/v1/facts/…、/v1/bases/…；模块模式另用 /v1/modules/…，§4.13）
 ```
 
 - `serve`：一个 HTTP 进程服务所有数据库与分支。分支在第一次请求时加载，之后常驻；每次请求核对 TerminusDB
@@ -1190,7 +1344,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `coordinator/src/domain.ts` | 看板与全部命令，写成纯状态转换；租约规则、证否、`next` 打分 |
 | `coordinator/src/store.ts` | PostgreSQL：看板（文档、`meta`、任务行、尝试行）、两条命令路径、幂等命令记录、事件、作业队列、创建或挂载、取代 |
 | `perf/board-load.ts`、`perf/sync-cost.ts` | 协作负载测试、同步开销测量（§3.7） |
-| `coordinator/src/worker.ts` | 作业：`provision`、`attach`、`submit_node`、`resolve`、`submit`（含为新前提自动登记陈述）、`import`、`sync`、`assemble`、`writeback` |
+| `coordinator/src/worker.ts` | 作业：`provision`、`attach`、`submit_node`、`resolve`、`submit`（含为新前提自动登记陈述）、`submit_modules`（模块模式）、`import`、`sync`、`assemble`、`writeback`；模块模式的挂载在 `bindModules` |
 | `coordinator/src/lean-source.ts` | 保守的 Lean 扫描器 |
 | `coordinator/src/proof.ts` | 证明环境、节点转换、提交草稿、合同生成 |
 | `coordinator/src/writeback.ts` | 回写批次 |
@@ -1199,6 +1353,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `coordinator/src/cli.ts` | `mdc`：参数解析与分派 |
 | `coordinator/src/identity.ts` | 身份：本人令牌与委托子令牌、权限范围、令牌表（§4.3） |
 | `coordinator/src/goal-draft.ts` | 目标草稿（§4.11） |
+| `coordinator/src/modules.ts` | 模块模式：根文件与共享模块的收集、显示用的陈述、模块目标草稿、文件节点的写回批次（§4.13） |
+| `coordinator/src/mdc/module-dir.ts` | 模块模式的目标目录：起稿文件、`GOAL.md`、收集贡献（§4.13） |
+| `coordinator/src/imports.ts` | 外部证明导入（`docs/external-proofs.md`） |
 | `coordinator/src/mdc/*` | `mdc` 的动词层：请求与错误码（`client.ts`）、工作文件（`goal-file.ts`）、`.mdc/` 记录（`workspace.ts`）、动词（`verbs.ts`）、MCP 服务（`mcp.ts`） |
 
 ### 4.2 数据与存储
@@ -1233,6 +1390,9 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
   - `project`：数据库、环境、根节点、是否被取代；
   - `review`：新拆法是否等待审阅（`required`，缺省；或 `none`）；
   - `branches`：分支名 → 每个分支的 `request`（根节点、`bound`、`stale`、`error`、合同快照）、`nodes`（节点绑定）、`picks`、`writebacks`、`accepted`。
+- 模块模式的看板另有 `mode: "modules"` 与 `shared_modules`（共享模块 ID → 模块名、来自哪些文档节点或哪份拆法认证）；目标上有 `module`
+  （陈述来源）；节点绑定上有 `file`（写回建的文件节点：路径、所属认证、是否根文件）。写回在 Lean 块元数据里记 `lean_module`、`module_path`、
+  `contribution`、`shared_module_id`（§4.13）。
 - 阶段 4 的旧看板把 `request`、`nodes`、`writebacks` 放在顶层，现在只读。
 - 还有一种不绑定文档、由管理员直接给出陈述创建的看板（原型 `app/` 曾使用；`app/` 已在 `a10a395` 删除），接口保留未改。
 
@@ -1243,6 +1403,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 - **委托子令牌**（项目阶段 4）：身份写作 `alice/codex-1`。文档角色、成员、owner、管理员都按主身份 `alice` 判断；
   租约、事件、提交者、笔记、审阅、文档提交的作者记完整身份。子令牌的权限范围（`work`、`maintain`、`edit`）在主身份的角色之外再加限制，
   不足时返回 `403 token_scope_required`（文档接口返回 403 并写明所需范围）。各命令与接口所需的范围见 §2.6 项目阶段 4 决定 2–3。
+- **租约只由持有人结束，释放例外**（2026-10-15）：委托令牌背后的本人、带 `maintain` 的 owner 也可以结束一个租约，但只能是
+  `outcome: released`、`spent: 0`，不能替别人报告结果或花费。用来放开停掉的会话留下的租约；界面在目标详情里给他们显示「Release」。
 - 工作区角色矩阵（合同决定 D）：
 
 | 动作 | 允许的角色 |
@@ -1271,7 +1433,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 - 422：校验失败。
 
 全局接口 `/api/status`、`/api/projects` 处理目录操作：`init`、`remove`、`new_branch`、`delete_branch`、`grant`、`set_owner`。
-没有按分支的启动或停止。分支接口的请求体上限是 256 MiB，协作接口是 2.2 MB。
+没有按分支的启动或停止。分支接口的请求体上限是 256 MiB，协作接口是 2.2 MB；其中命令接口与草稿检查是 32 MB，因为模块模式的一份贡献可以有 64 个文件（§4.13）。
 
 ### 4.5 节点状态的两个维度
 
@@ -1285,7 +1447,10 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `insufficient` / `derivable` / `certified` | 目标状态；附 `project`、`branch`（显示的是哪个分支的转换）、`goal`、`minimum_trust`、`checked_at` |
 | `stale` | 节点或其陈述所用定义的 Lean 文本在转换后改了 |
 | `rejected` | 转换器或 LeanGround 拒绝了它，附原因 |
-| `registered` | 定义节点：其定义已在 LeanGround 登记，附 `definition_ids`；定义没有要证的目标。写回提交会把写入的定义标成 `certified`，也算已登记。还在等依赖登记的定义显示 `not_submitted` |
+| `registered` | 定义节点：其定义已在 LeanGround 登记，附 `definition_ids`；定义没有要证的目标。写回提交会把写入的定义标成 `certified`，也算已登记。还在等依赖登记的定义显示 `not_submitted`。模块模式下共享模块的节点也是这样，`definition_ids` 是共享模块 ID |
+| `imported` | 外部证明导入的上游原文，文本未改（`docs/external-proofs.md`）：由项目核验整体覆盖，不是协作节点；改过就按普通节点显示 |
+
+模块模式下：根节点显示根目标的状态；写回建的文件节点显示所属认证的目标的状态（§4.13）。
 
 **状态来源的优先顺序**：
 
@@ -1309,11 +1474,13 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | 合同 | 要点 |
 |---|---|
 | `document-permission.v1` | 工作区、分支继承、§4.3 的动作矩阵 |
-| `proof-environment.v1` | 环境身份只由完整的 BaseRef、context、options、minimum_trust 决定；请求绑定数据库、分支、根节点与依赖节点的 Lean 内容指纹（Lean 块文本的 SHA-256，不含标题、其他块和 metadata）；定义依赖取传递闭包，定理前提只取直接依赖；`data_version` 只用于审计和回写前置条件，不进入身份 |
+| `proof-environment.v1` | 环境身份只由完整的 BaseRef、context、options、minimum_trust 决定；请求绑定数据库、分支、根节点与依赖节点的 Lean 内容指纹（Lean 块文本的 SHA-256，不含标题、其他块和 metadata）；定义依赖取传递闭包，定理前提只取直接依赖；`data_version` 只用于审计和回写前置条件，不进入身份。例外：模块模式的环境 ID 另算进 `mode`，合同里没有这个字段，`mode` 只存在环境记录与看板上（§4.13） |
 | `declaration-binding.v1` | 节点分为 `definition_only`、`theorem`、`unsupported` 三类；必须标明分类来源（`syntax_scan` 或 `explicit_metadata`）；草图必须配 `lean-worker-sketch`，完整证明必须配 `lean-worker`；`required_context` 与固定 context 逐行相等 |
 | `writeback-batch.v1` | 批次 ID、重放键、目标分支及其数据版本、来源请求、有序操作（更新块 / 新建目标节点 / 新建定义节点）；`conflict_resolution` 固定为 `abort_entire_batch` |
 
 ### 4.7 节点转换（声明绑定）
+
+本节是声明模式；模块模式的挂载见 §4.13。
 
 挂载一个分支时，从根节点出发，沿依赖收集所有有 Lean 块的节点。没有 Lean 块的节点是非形式化说明，遍历不穿过它们。
 逐个节点分类：
@@ -1352,7 +1519,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `claim` / `heartbeat` / `finish` | 成员 / 租约持有人；释放另有令牌背后的本人、带 `maintain` 的 owner | 租约：30–3600 秒；`finish` 报告花费和结果，可带一条笔记。会话没有 `mdc done` 就停下时，它的租约要到期才放开；本人或 owner 可以提前释放（`outcome: released`、`spent: 0`，2026-10-15 3a 试点中补上） |
 | `note` | 成员 | 在目标上留一条尝试笔记（1–500 字符；保留最近 50 条） |
 | `edit_note`、`delete_note` | 笔记作者（人可以改自己委托令牌的笔记）；`delete_note` 另有 owner | 按 `{actor, at}` 找到一条笔记，改写正文（记 `edited`）或删除；owner 的令牌删别人的笔记需要 `maintain` |
-| `submit`、`resolve`、`import`、`submit_node`、`attach`、`sync` | 成员（`attach` 还需要分支的 editor 权限） | 后台作业；`submit` 可带 `description`，吸收草图时为新前提登记陈述（§4.11） |
+| `submit`、`resolve`、`import`、`submit_node`、`attach`、`sync` | 成员（`attach` 还需要分支的 editor 权限） | 后台作业；`submit` 可带 `description`，吸收草图时为新前提登记陈述（§4.11）。模块项目里 `submit`、`resolve`、`submit_node` 以 `not_in_module_mode` 拒绝 |
+| `submit_modules` | 成员 | 模块项目的提交（§4.13）：`goal`、`files`、`root`、`shared`、可选 `new_shared`、`mode`、`description`；其他项目以 `not_a_module_project` 拒绝 |
 | `task`、`members`、`decomposition`、`policy`、`pick`、`assemble`、`retry`、`accept` | owner | 管理；`decomposition` 即审阅，可带意见；`policy` 设定新拆法是否等待审阅 |
 | `notes` | 成员 | 项目备注 |
 
@@ -1361,7 +1529,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 - 数学状态、任务、尝试、拆法状态、项目状态分开记录。
 - 目标按 GoalKey 去重；每个新目标自动得到一个 `prove` 任务。
 - 只有从根出发、经 `active` 认证能到达的目标才能领取（否则 `inactive_goal`）。
-- **初始状态**（项目看板，阶段 3）：完整证明 `active`；文档节点来的草图 `active`；其余草图 `proposed`（`policy` 为 `none` 时 `active`）；
+- **初始状态**（项目看板，阶段 3）：完整证明 `active`；文档节点来的草图 `active`；其余草图 `proposed`（`policy` 为 `none` 时 `active`；
+  模块模式的看板建立时就是 `none`，模块决定 4）；
   前提含结论自身的认证 `retired`。原型看板一律 `active`。已在看板上的认证重新吸收时保持原状态。
 - **租约**：只有一个持有人；epoch 防止迟到者覆盖新状态；过期在下一次状态变化时记录，按预留额全额计费；
   过期只撤销调度权，迟到的正确证明仍然吸收。
@@ -1382,6 +1551,8 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 `/goals/KEY/draft`（目标草稿，§4.11）、`/nodes/UUID/draft`（节点草稿）、`/facts/CERT`（认证及源码）、`/next`（推荐，阶段 5）。
 
 ### 4.9 组装、回写与过期
+
+选路、计划与重试对两种模式相同；组装本身与回写，下面写的是声明模式，模块模式见 §4.13。
 
 **组装**：
 
@@ -1412,7 +1583,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 
 - `POST /v1/facts/{submit,define,resolve,read,plan,assemble,project,widen,events}`；
 - `GET /v1/bases/{key}`；
-- 模块模式的项目另用 `POST /v1/modules/{shared,resolve,check,submit}`（LeanGround `docs/14`；`docs/module-certification.md` §5.4），
+- 模块模式的项目另用 `POST /v1/modules/{shared,resolve,check,submit}`（LeanGround `docs/14`；§4.13），
   组装仍走 `/v1/facts/plan` 与 `/v1/facts/assemble`，组件是 `lean-modules`。
 
 **超时与重试**（项目阶段 6）：`resolve`、`submit`、`define`、`assemble` 要运行 Lean，上限默认 960 秒（`LEANGROUND_TIMEOUT_S`），
@@ -1428,17 +1599,22 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 - 已执行 `leanground db schema --only 10-definitions`；
 - worker 按新版重新安装：旧 worker 拒绝一切带定义的请求，症状是返回 `definition_is_proposition`；
 - 草图组件没有被停用；
-- 协调服务的身份（`LEANGROUND_ACTOR`）与令牌一致。
+- 协调服务的身份（`LEANGROUND_ACTOR`）与令牌一致；
+- 模块模式另需：LeanGround 包含 `ac124ed`（分支 `project-checks`），已执行 `leanground db schema --only 13-modules`，编译出 `module_cert`
+  （`lake build module_cert`），配置了沙箱（§4.13）。
 
 **LeanGround 侧的限制**：
 
-- 源码形态较严，拒绝 `#` 命令、`open … in`、属性、`private`、`instance`、`class`、记号、宏等；
+- 声明模式的源码形态较严，拒绝 `#` 命令、`open … in`、属性、`private`、`instance`、`class`、记号、宏等（模块模式没有这些限制）；
 - 没有读取项目成员的接口；
 - 没有按 GoalKey 读取陈述的接口，认证也只给出前提的 GoalKey，不给出完整身份。所以 `submit` 作业从草图的占位声明重新 `resolve`，
   GoalKey 一致才记下（§4.11）；
-- `/v1/check` 按 import 选择基座，不认识项目里登记的定义，也不返回 `sorry` 处的证明目标（所以需要项目决定 E 中的新接口）。
+- `/v1/check` 按 import 选择基座，不认识项目里登记的定义，也不返回 `sorry` 处的证明目标。模块模式的 `/v1/modules/check` 按目标检查整个目录，
+  返回根定理用到的占位，但同样不返回 `sorry` 处的证明目标。
 
 ### 4.11 目标工作文件规范 `mdc-goal-file/1`
+
+本节是声明模式的单文件格式；模块模式的目标目录见 §4.13。
 
 本节规定 `mdc pull` 写出、`mdc check/prove/split` 读入的文件。规范已定（G1–G4），已在项目阶段 2 实现（`coordinator/src/mdc/`；
 `check` 除外）。「必须」「不得」违反时 `mdc` 拒绝；「应当」违反时只警告。
@@ -1535,6 +1711,7 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 | `identity` | PostgreSQL、TerminusDB；第二项另需真实 LeanGround | 项目阶段 4 验收：子令牌、权限范围、撤销与过期、成员变更、`mdc mcp` 子进程 |
 | `maintain` | PostgreSQL、TerminusDB；第二项另需真实 LeanGround | 项目阶段 6 验收：`goals`、`goal`、`review`、`branch new --pick`、editor 的选择权限、维护者命令的重放 |
 | `robustness` | 前两项无；第三项 PostgreSQL；第四项另需 TerminusDB | 项目阶段 6：LeanGround 的分类超时、TerminusDB 冲突重发、作业退避、LeanGround 停止期间提交的证明在恢复后完成 |
+| `modules` | 前四项无；第五项 PostgreSQL、TerminusDB；第六项另需带模块组件的 LeanGround（`MDC_TEST_MODULES_LEANGROUND_URL/TOKEN`） | 项目阶段 8：import 解析、根文件与共享模块的收集、显示用的陈述、目录里的贡献；一个模块模式项目从建项走到写回（替身与真实各一项） |
 | `tests/docker-smoke.py` | Docker 与本地构建的镜像；设了 `MDC_SMOKE_LEANGROUND_URL/TOKEN/ACTOR` 时另需 LeanGround | 导出的部署；带 LeanGround 时 Agent 经部署证完一条定理（项目阶段 6） |
 | `web` vitest、svelte-check、`web/e2e` | e2e 需要 TerminusDB、PostgreSQL，协作用例需要 LeanGround | 界面；协作用例含审阅与笔记（阶段 3）。e2e 用的是 `web/dist`，前端改动后先构建 |
 
@@ -1543,6 +1720,112 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 （协调服务把这个操作者登记为每个 LeanGround 项目的成员）。浏览器 e2e 用的是 `LEANGROUND_SERVER_URL`、`LEANGROUND_FACT_TOKEN`、
 `LEANGROUND_ACTOR`。
 每个测试使用独立的 PostgreSQL schema 和 TerminusDB 数据库，结束时在 `finally` 里删掉自己建的库（`harness.ts` 的 `removeDatabases`）：测试用的 TerminusDB 常与本地服务是同一个实例，留下的库会作为项目出现在本地服务的项目列表里。被强行终止的运行仍会留下库。`mdc` 的维护者命令把重放日志写在 `MDC_STATE_DIR`，测试为每个身份设一个临时目录。
+
+### 4.13 模块模式
+
+本节是模块模式（项目阶段 8）的技术规则。没有说到的部分与声明模式相同：目标、GoalKey、路线、目标状态、租约、笔记、`next`、同步。
+LeanGround 侧的接口、数据与验收见 LeanGround `docs/14`。
+
+**环境与看板**：
+
+- 证明环境 `mode: "modules"`；context 与 options 必须为空，否则 400。环境 ID 另算进 `mode`（§4.6），所以改模式会换一块看板。
+- 看板记 `mode: "modules"`，建立时 `review: "none"`（模块决定 4）。目标上的 `module` 是它的陈述来源：常量全名、所用共享模块；
+  根目标另记节点与文件路径，前提另记提出它的拆法认证。看板上的 `declaration` 是从源码里找出来的，只用于显示，不参与认证。
+- 声明模式的 `submit`、`resolve`、`submit_node`、`negate` 以 `not_in_module_mode` 拒绝；`submit_modules` 只在模块项目里可用。
+
+**挂载**（`worker.ts` 的 `bindModules`、`modules.ts` 的 `projectFiles`）：
+
+1. 根节点的 Lean 块是陈述文件。节点的模块名依次取 Lean 块元数据 `lean_module`、`import_module`，否则用节点的 `module`；
+   文件路径是模块名按点分开再加 `.lean`，每一段都必须是 Lean 标识符，否则 `invalid_module_name`。
+2. 从根出发，沿依赖边和文件头的 `import` 收集 Lean 节点。文件头指第一条别的命令之前的部分，与 LeanGround 的规则相同。
+   写回建的证明文件（元数据 `contribution`）不收集。两个节点是同一个模块名时 `module_name_conflict`。
+3. 根以外收集到的节点，整组登记为一个共享模块（`/v1/modules/shared`）。失败时每个节点记下 LeanGround 的原因
+   （例如 `compile_failed`，附 Lean 的诊断），根以 `unregistered_statement_definition` 拒绝。
+4. 登记陈述（`/v1/modules/resolve`）：取根文件里唯一的 `sorry` 定理，或元数据 `lean_conclusion` 指定的常量，得到 GoalKey 与陈述常量。
+5. 节点绑定：根是定理（`open`）；共享模块的节点是定义（`registered`，`definition_ids` 是共享模块 ID）。
+   过期判断与声明模式相同：比较合同快照里的 Lean 文本指纹。
+
+**目标草稿与目标目录**（`GET /projects/ID/goals/KEY/draft` 返回 `mdc-module-draft/1`；`mdc/module-dir.ts`）：
+
+- 草稿内容：
+  - 陈述来源的文件：根目标取自某个已挂载分支，要求那里的文本仍是转换时的样子，否则 `statement_changed`；前提取自拆法认证的文件集合；
+  - 陈述常量；
+  - 所用的共享模块及其依赖，各自的文件；
+  - 笔记与任务。
+- `mdc pull` 写出目录 `<GoalKey 前 8 位>-<名字>/`：
+  - 根目标的陈述复制到 `Work/Main.lean`，让证明在自己的模块里重述定理，不与陈述来源同名；前提则原样复制拆法的文件；
+  - 共享模块按模块路径放好，设为只读；
+  - `GOAL.md` 写明目标、根定理、规则和最近的笔记；
+  - 记录写在 `.mdc/files/<目录>.json`，格式 `mdc-module-dir-record/1`：目标、根常量、陈述来源、共享模块 ID 与各文件的 SHA-256、租约、提交。
+  - 目录已经存在时拒绝（`file_exists`）。
+- 贡献由哪些文件组成：目录里除共享模块、以 `.` 开头的目录之外的全部 `.lean` 文件。
+  - 路径的每一段都必须是 Lean 标识符，否则 `invalid_path`；
+  - 共享模块被改过或缺失时拒绝（`shared_module_modified`、`shared_module_missing`）；
+  - 至多 64 个文件，每个 2 MB。
+- `mdc check DIR [--root NAME]`：走 `/v1/modules/check`，编译目录并按目标检查，返回诊断、检查发现的问题、根定理用到的占位；不入库。
+  不在目标目录里的临时文件（例如只写 `#check` 的文件），`mdc check FILE` 改走常驻检查 `/v1/check`（阶段 8 试点事项 2）。
+- `mdc prove DIR` / `mdc split DIR -m …`：发 `submit_modules`，`mode` 分别为 `leaf`、`sketch`，由 LeanGround 在入库之前核对。
+  - 根定理默认是陈述常量，`--root` 可改；
+  - `split --shared FILE`（可重复）先把这些文件登记成共享模块，ID 加进本次的 `shared`；
+  - 重放、续租、`done`、`note` 与工作文件相同。
+- MCP 工具：`pull` 返回目录名与全部文件；`prove`、`split`、`check` 接受 `files`（路径 → 原文，调用前写入）与 `root`，`split` 另接受 `shared`。
+
+**提交作业**（`submit_modules`）：
+
+1. 有 `new_shared` 时，先登记共享模块。
+2. 调 `/v1/modules/submit`，带上目标的完整身份、`files`、`root`、`shared`、`mode`、项目可见范围，`caller_ref` 是作业 ID。
+3. 认证照常吸收。前提按回复里的 `premise_goals` 登记完整身份；第一次提出某个前提的拆法，成为它的陈述来源。新登记的共享模块记进 `shared_modules`。
+
+作业结果与 `submit` 相同，只是前提的 `statement` 为 `resolved` 或 `identity_missing`。
+
+**LeanGround 怎样认证一份贡献**（组件 `lean-modules`）：
+
+1. **编译**：按 `import` 顺序逐个编译，外面套沙箱（macOS 用 `sandbox-exec`：禁网络，只许写编译目录）。
+   编译产物按「文件内容加所用共享模块」寻址，成功的结果缓存。
+2. **读常量**：检查程序 `module_cert` 直接读 `.olean` 取常量，不导入贡献；基座只导入一次。
+3. **常量层检查**：
+   - 根定理存在，而且不是占位；
+   - 贡献不许声明公理；
+   - 从根收集公理，遇到占位停止，只许 `propext`、`Quot.sound`、`Classical.choice`；
+   - 前提的陈述不许引用本贡献自己的常量（`premise_uses_local_constant`）；
+   - 把目标的陈述来源接到根上（陈述常量的值换成根定理），连同本贡献的全部常量一起过内核；只许宇宙参数个数相同的连接。
+4. **目标身份**：`type_key` 与声明模式用同一算法；陈述引用到的共享模块进 GoalKey 的「定义」一项。所以只依赖基座的命题，两种模式得到同一个 GoalKey。
+
+**组装**（`assemble` 作业 → LeanGround 的 `ModuleFacts.assemble` → `module_cert` 的 `assemble`）：
+
+1. 选路与声明模式相同（§4.9），组件一律用 `lean-modules`；路线里混有声明模式的认证时拒绝（`mixed_source_formats`）。
+2. 准备材料：每份认证编号 u0、u1…；取出文件集合与编译产物；按绑定写出接线表（占位 → 提供者的编号）；取出根目标的陈述来源。
+3. 检查程序：
+   - 每份贡献的常量加前缀 `MDC.<编号>.`；
+   - 每个占位的值换成提供者的根定理：类型不变，所以内核会检查两者在定义上相等；
+   - 陈述来源加前缀 `MDC.target.`，它的值换成根贡献的根定理；
+   - 导入基座，合并后的全部常量过内核；
+   - 从最终定理收集公理；
+   - 把最终定理用到的全部常量放进空环境重放。
+4. 成功时，LeanGround 记一份 `lean-modules-assembly-v1` 认证：证根目标、没有前提。它的「源码」是计划、各贡献、接线与陈述的描述，不是拼接出来的 Lean 文件。
+
+不在源码层拼接，也不重新编译。所以一份贡献里的全局 `instance`、`simp` 属性，不会改变另一份贡献的展开方式。
+
+**回写**（`modules.ts` 的 `buildModuleBatch`）：
+
+- 先核对转换时的节点（根与共享模块）文本没变；变了就整批放弃，原因是 `document_conflict`。
+- 路线上每份认证的每个文件建一个节点：
+  - 标题是「目标名 — 路径」，Lean 块是认证的原文；
+  - 元数据记 `lean_module`、`module_path`、`contribution`、`certification_id`、`certified_lean_sha256`；
+  - 拆法登记的共享模块也建节点，元数据记 `shared_module_id`；
+  - 已有同一认证、同一路径的节点就复用。
+- 边有三种：文件之间的 `import`、对共享模块节点的 `import`、从拆法的根文件到提供者的根文件。
+  根文件是声明根定理的那个文件；找不到时，取没被别的文件导入的那个。
+- 根节点文本不改；依赖加上根认证的根文件；元数据记最终认证与批次 ID。
+- 沿用合同 `writeback-batch.v1`：文件节点记为 `create_goal_node`，共享模块节点记为 `create_definition_node`。
+
+**接口与部署前提**：
+
+- LeanGround 接口：`POST /v1/modules/{shared,resolve,check,submit}`；组装沿用 `/v1/facts/plan` 与 `/v1/facts/assemble`，组件 `lean-modules`；
+  读共享模块用 `/v1/facts/read`（`kind: module`）。
+- LeanGround 部署前提见 §4.10。没有 `module_cert` 可执行文件时，服务不登记这个组件，模块项目的提交以 `component_unavailable` 失败。
+  临时文件检查要用到常驻检查进程。
+- MathDoc：命令接口与草稿检查的请求体上限是 32 MB（§4.4）。
 
 ## 5. 未覆盖与待定
 
@@ -1577,10 +1860,25 @@ coordinator/（TypeScript；三种模式 migrate / serve / worker）
 **LeanGround**：
 
 - 定义同名在多分支下的行为没有用真实 LeanGround 验证；
-- 草稿检查接口还没有设计（项目决定 E）；
+- 草稿检查：声明模式用 `/v1/check`（2026-10-10 接入），模块模式用 `/v1/modules/check`；两者都不返回 `sorry` 处的证明目标；
 - 安装脚本问题没有在 LeanGround 仓库修复。
 
 **旧数据**：旧证明请求的认证不会自动导入新看板；旧库需要管理员认领；已有文档中不合规 Lean 块的比例没有统计。
+
+**模块模式**（§2.7.10、§4.13；前五条是成为新项目默认之前要做完的）：
+
+- 没有部署：LeanGround 的模块组件只跑在测试实例上；正式环境要用的 Linux 沙箱（landrun）没有接；
+- 模块检查没有常驻进程：每次目录检查和组装都重新导入 Mathlib（3a 的组装光载入就 28 秒），每个导入 Mathlib 的编译约占 6 GB；
+- 没有证否：模块目标没有命题文本可以取否定。可行的做法是在常量层直接构造「¬ 陈述」作为新目标 [推断：没做过]；
+- 多个会话共用一个身份时，租约分不清会话，`mdc pull` 遇到已有目录以 `file_exists` 拒绝；需要每个会话一个令牌；
+- 同一代理、同一模型在两种模式下的对照没有做（3a 换了代理和模型）；
+- 写回的文件节点可能很长（3a 的根证明 700 行），没有按声明列出大纲；网页没有模块目标的专门视图，也不提示当前身份缺少哪种权限；
+- 连接只许宇宙参数个数相同，宇宙多态的证明连不到 `Type` 版本的目标（少收，不误收）；
+- 放宽认证的可见范围时，没有核对它用到的共享模块；同样的文件由两个人登记，得到两个共享模块 ID；
+- 声明模式的已有认证（正式库 547 份）怎么转成模块模式，没有设计；两种格式不能出现在同一条路线上；
+- 已导入的项目接着协作（3b 的前提）没有走过；
+- v1 环境合同里没有 `mode` 字段，要不要升 v2 没有定；
+- 常量层规则管不到的元程序风险（例如编译期改写环境扩展、影响导入者的展开方式）没有调研。
 
 **界面**：
 
